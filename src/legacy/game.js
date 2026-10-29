@@ -45,10 +45,12 @@ const ED = {
   brood:   { hp: 3600, spd: 2.8, dmg: 55, r: 2.6, armor: 7, col: '#121218', cd: 1.2 },
 };
 const WEAPONS = {
-  pistol: { name: 'M9 Sidearm', rate: .3, dmg: 11, spread: .012, ammo: 0, noise: 2, kick: .012 },
-  pulse:  { name: 'Pulse Rifle', rate: .09, dmg: 13, spread: .02, ammo: 1, noise: 1.6, kick: .006 },
-  flamer: { name: 'Flamethrower', rate: .03, dmg: 0, spread: 0, ammo: .3, noise: .45, kick: 0 },
-  smart:  { name: 'Smart Gun', rate: .07, dmg: 17, spread: .008, ammo: 1, noise: 1.1, kick: .004 },
+  // mag: rounds (or fuel units) per magazine, like the genre's classics: a 12-round sidearm, the 99-round
+  // pulse rifle, a 100-unit flamer tank and the smart gun's 500-round drum. reload: seconds.
+  pistol: { name: 'M9 Sidearm', rate: .3, dmg: 11, spread: .012, ammo: 0, noise: 2, kick: .012, mag: 12, reload: 1.5 },
+  pulse:  { name: 'Pulse Rifle', rate: .09, dmg: 13, spread: .02, ammo: 1, noise: 1.6, kick: .006, mag: 99, reload: 2.4 },
+  flamer: { name: 'Flamethrower', rate: .03, dmg: 0, spread: 0, ammo: .3, noise: .45, kick: 0, mag: 100, reload: 3 },
+  smart:  { name: 'Smart Gun', rate: .07, dmg: 17, spread: .008, ammo: 1, noise: 1.1, kick: .004, mag: 500, reload: 4 },
 };
 const RESEARCH = [
   { id: 't2', name: 'Field workshop', desc: 'Tier 2. Metal walls, floodlights, pulse rifle.', cost: { scrap: 20, metal: 8 }, tier: 1 },
@@ -169,8 +171,10 @@ const M = {
   red: new THREE.MeshStandardMaterial({ color: col('#ff4030'), emissive: col('#ff4030'), emissiveIntensity: 0 }),
   acidSac: new THREE.MeshStandardMaterial({ color: col('#9cc23a'), emissive: col('#7ea12a'), emissiveIntensity: .8, roughness: .4 }),
   gun: new THREE.MeshStandardMaterial({ color: col('#3b4146'), roughness: .4, metalness: .6 }),
-  gunOlive: new THREE.MeshStandardMaterial({ color: col('#3e4a33'), roughness: .7, metalness: .2 }),
+  gunOlive: new THREE.MeshStandardMaterial({ color: col('#323a2b'), roughness: .65, metalness: .25 }),
   glove: new THREE.MeshStandardMaterial({ color: col('#2b2f26'), roughness: .9 }),
+  brass: new THREE.MeshStandardMaterial({ color: col('#b08a3c'), roughness: .35, metalness: .9 }),
+  fuel: new THREE.MeshStandardMaterial({ color: col('#8a3a1c'), roughness: .5, metalness: .4 }),
 };
 const CRATE_MAT = { hive: new THREE.MeshStandardMaterial({ color: col('#3a4529'), roughness: .5 }) };
 // Texture the shared materials. Each keeps its tuned color as a tint over the scanned surface.
@@ -551,34 +555,103 @@ function buildStruct(type, ghost) {
 // ---------- viewmodel ----------
 const vm = new THREE.Group(); camera.add(vm); vm.position.set(.24, -.24, -.42); vm.scale.setScalar(.75);
 const VMS = {};
+// Pulse rifle round counter: two red seven-segment digits on top of the receiver.
+const counterTex = canvasTex(128, 64, () => {});
+function drawCounter(n) {
+  const c = counterTex.image, g = c.getContext('2d'); g.fillStyle = '#120505'; g.fillRect(0, 0, 128, 64);
+  const SEG = [0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f], txt = String(Math.max(0, Math.min(99, n))).padStart(2, '0');
+  [...txt].forEach((ch, i) => {
+    const m = SEG[+ch], x = 14 + i * 56, y = 8, w = 36, h = 24, t = 6;
+    const bars = [[x, y, w, t], [x + w - t, y, t, h], [x + w - t, y + h, t, h], [x, y + 2 * h - t, w, t], [x, y + h, t, h], [x, y, t, h], [x, y + h - t / 2, w, t]];
+    bars.forEach((b, k) => { g.fillStyle = m & (1 << k) ? '#ff3a24' : '#2a0b08'; g.fillRect(...b); });
+  });
+  counterTex.needsUpdate = true;
+}
+// a magazine's travel during a reload: out over [a, b], gone until c, back in over [c, d]
+function magTravel(R, a, b, c, d) {
+  if (R < a || R > d) return 0;
+  return R < b ? smooth(a, b, R) : R < c ? 1 : 1 - smooth(c, d, R);
+}
 function buildViewmodels() {
-  const add = (parent, geo, mat, x, y, z, sx, sy, sz) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.scale.set(sx, sy, sz); parent.add(m); return m; };
+  const add = (parent, geo, mat, x, y, z, sx = 1, sy = 1, sz = 1) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.scale.set(sx, sy, sz); parent.add(m); return m; };
   const mk = () => { const g = new THREE.Group(); vm.add(g); g.visible = false; return g; };
+  // models are laid out with the muzzle along +x, then turned to point down the view (-z)
+  const body = (g) => { const b = new THREE.Group(); b.rotation.y = Math.PI / 2; b.scale.setScalar(.88); g.add(b); return b; };
+  const part = (parent, x, y, z) => { const p = new THREE.Group(); p.position.set(x, y, z); p.userData.home = p.position.clone(); parent.add(p); return p; };
+
   let g = mk(); VMS.pistol = g;
   // scanned service pistol, barrel along +x in the file; the slide is its own part so it can cycle
   const pistol = placeModel(MODELS.service_pistol); pistol.rotation.y = Math.PI / 2; pistol.scale.setScalar(1.15); pistol.position.set(-.02, -.08, -.05); g.add(pistol);
   pistol.traverse(o => { o.castShadow = false; o.receiveShadow = false; });
   g.slide = pistol.getObjectByName('service_pistol_slide_a'); g.slideX = g.slide?.position.x ?? 0;
-  add(g, BOX, M.glove, 0, -.12, .06, .08, .1, .12);
+  g.mag = part(g, -.02, -.1, .02); g.mag.rotation.x = -.25; add(g.mag, BOX, M.gun, 0, -.05, 0, .022, .1, .045); add(g.mag, BOX, M.brass, 0, .003, -.006, .012, .006, .03);
+  g.hand = add(g, BOX, M.glove, 0, -.12, .06, .08, .1, .12);
   g.muzzle = new THREE.Vector3(0, .01, -.16);
-  g = mk(); VMS.pulse = g;
-  add(g, BOX, M.gunOlive, 0, 0, -.1, .08, .1, .5); add(g, BOX, M.gun, 0, .01, -.42, .03, .03, .18); add(g, BOX, M.gun, 0, -.09, -.12, .05, .12, .07);
-  add(g, BOX, M.gun, 0, .07, -.05, .04, .04, .22); add(g, BOX, M.amber, .042, .02, -.02, .005, .02, .05); add(g, BOX, M.glove, -.02, -.1, .08, .08, .1, .12); add(g, BOX, M.glove, 0, -.06, -.28, .08, .07, .1);
-  g.muzzle = new THREE.Vector3(0, .01, -.52);
-  g = mk(); VMS.flamer = g;
-  add(g, CYLS, M.gun, 0, 0, -.15, .035, .5, .035).rotation.x = Math.PI / 2; add(g, CYLS, new THREE.MeshStandardMaterial({ color: col('#7a2c1c'), roughness: .5 }), 0, -.09, -.05, .06, .3, .06).rotation.x = Math.PI / 2;
-  add(g, SPH_LO, M.amber, 0, -.02, -.41, .012, .012, .012); add(g, BOX, M.glove, 0, -.1, .08, .08, .1, .12);
-  g.muzzle = new THREE.Vector3(0, 0, -.42);
-  g = mk(); VMS.smart = g;
-  add(g, BOX, M.gun, .02, 0, -.1, .12, .12, .5); add(g, CYLS, M.darkMetal, .02, .0, -.42, .04, .2, .04).rotation.x = Math.PI / 2;
-  add(g, BOX, M.metal, .1, .02, .05, .03, .03, .3); add(g, BOX, new THREE.MeshStandardMaterial({ color: col('#57d2ff'), emissive: col('#2aa0d0'), emissiveIntensity: 1 }), -.045, .07, -.05, .04, .03, .06);
-  g.muzzle = new THREE.Vector3(.02, 0, -.54);
-}
+  g.anim = (R, dt, g) => {
+    // drop the mag out of the grip, seat a fresh one, then the slide snaps forward
+    const k = magTravel(R, .1, .3, .32, .48); g.mag.visible = k > .02; g.mag.position.y = g.mag.userData.home.y - k * .22;
+    if (R >= 0 && g.slide) g.slide.position.x = g.slideX - (R < .78 ? .024 : .024 * (1 - smooth(.78, .82, R)));
+  };
 
+  g = mk(); VMS.pulse = g;
+  let b = body(g);
+  add(b, loft([{ x: -.16, w: .062, h: .1, y: .0, n: 6 }, { x: .1, w: .07, h: .11, y: .005, n: 6 }, { x: .38, w: .066, h: .1, y: 0, n: 6 }, { x: .43, w: .052, h: .075, y: -.005, n: 4 }], 12), M.gunOlive, 0, 0, 0);
+  add(b, loft([{ x: -.14, w: .05, h: .05, y: .07, n: 6 }, { x: .2, w: .05, h: .05, y: .07, n: 6 }, { x: .26, w: .03, h: .03, y: .065, n: 4 }], 8), M.gun, 0, 0, 0);
+  add(b, latheX([[.012, 0], [.012, .14], [.016, .14], [.016, .17], [0, .17]], 10), M.gun, .4, .012, 0);
+  add(b, latheX([[.024, 0], [.024, .34], [.028, .34], [.028, .36], [0, .36]], 12), M.gun, .04, -.07, 0); // underslung grenade launcher
+  add(b, BOX, M.gun, .25, -.088, 0, .12, .035, .06); // pump grip
+  const grip = add(b, BOX, M.gun, -.09, -.1, 0, .04, .11, .035); grip.rotation.z = .3;
+  for (const z of [-.022, .022]) add(b, BOX, M.gun, -.26, .0, z, .2, .012, .01); // wire stock
+  add(b, BOX, M.gun, -.36, -.01, 0, .02, .09, .05);
+  for (let i = 0; i < 4; i++) add(b, BOX, M.gun, .12 + i * .055, .03, -.036, .03, .018, .004); // shroud vents
+  const ctr = add(b, new THREE.PlaneGeometry(.05, .025), new THREE.MeshBasicMaterial({ map: counterTex, toneMapped: false }), -.08, .0961, 0); ctr.rotation.x = -Math.PI / 2; ctr.rotation.z = -Math.PI / 2;
+  g.mag = part(b, .0, -.06, 0); g.mag.rotation.z = -.15; add(g.mag, BOX, M.gun, 0, -.06, 0, .04, .12, .03);
+  g.bolt = part(b, .05, .02, -.037); add(g.bolt, BOX, M.darkMetal, 0, 0, 0, .025, .015, .012);
+  g.hand = add(g, BOX, M.glove, -.02, -.1, .08, .08, .1, .12); add(g, BOX, M.glove, 0, -.08, -.28, .08, .07, .1);
+  g.muzzle = new THREE.Vector3(0, .013, -.5);
+  g.anim = (R, dt, g) => {
+    const k = magTravel(R, .12, .3, .32, .52); g.mag.visible = k < .98; g.mag.position.y = g.mag.userData.home.y - k * .25; g.mag.position.x = g.mag.userData.home.x - k * .04;
+    // charging handle racked back and released
+    const bk = R < 0 ? 0 : magTravel(R, .7, .74, .77, .8); g.bolt.position.x = g.bolt.userData.home.x - bk * .06;
+    if (g.shown !== S.mags.pulse) { g.shown = S.mags.pulse; drawCounter(Math.floor(S.mags.pulse ?? 0)); }
+  };
+
+  g = mk(); VMS.flamer = g;
+  b = body(g);
+  add(b, latheX([[.03, -.22], [.03, .4], [.024, .4], [.024, .46], [.04, .5], [.036, .52], [0, .52]], 14), M.gun, 0, 0, 0);
+  for (let i = 0; i < 6; i++) add(b, new THREE.TorusGeometry(.032, .005, 5, 14), M.darkMetal, .1 + i * .04, 0, 0).rotation.y = Math.PI / 2; // heat-sink rings
+  add(b, BOX, M.gun, -.12, -.075, 0, .04, .11, .035).rotation.z = .3; add(b, BOX, M.gun, .22, -.065, 0, .035, .09, .035);
+  g.mag = part(b, .04, -.075, 0); add(g.mag, latheX([[0, -.1], [.035, -.095], [.04, -.07], [.04, .1], [.035, .12], [0, .125]], 14), M.fuel, 0, 0, 0);
+  g.pilot = add(b, SPH_LO, M.amber, .515, -.03, 0, .012, .012, .012);
+  g.hand = add(g, BOX, M.glove, 0, -.1, .1, .08, .1, .12);
+  g.muzzle = new THREE.Vector3(0, 0, -.46);
+  g.anim = (R, dt, g) => {
+    const k = magTravel(R, .2, .32, .45, .63); g.mag.visible = k < .98; g.mag.position.y = g.mag.userData.home.y - k * .22;
+    const lit = R < 0 || R > .85; g.pilot.visible = lit; g.pilot.scale.setScalar(.011 + Math.random() * .004 + (S.muzzle > 0 ? .006 : 0));
+  };
+
+  g = mk(); VMS.smart = g;
+  b = body(g);
+  add(b, loft([{ x: -.2, w: .1, h: .12, y: 0, n: 6 }, { x: .25, w: .12, h: .14, y: .005, n: 6 }, { x: .4, w: .1, h: .11, y: 0, n: 5 }, { x: .44, w: .07, h: .07, y: 0, n: 4 }], 12), M.gun, 0, 0, 0);
+  add(b, latheX([[.035, 0], [.035, .18], [.028, .18], [.028, .22], [0, .22]], 14), M.darkMetal, .4, 0, 0);
+  for (let i = 0; i < 5; i++) add(b, BOX, M.darkMetal, .43 + i * .035, .036, 0, .02, .008, .05); // barrel jacket vents
+  add(b, BOX, M.metal, .15, .1, 0, .3, .03, .03); // carry rail
+  add(b, BOX, new THREE.MeshStandardMaterial({ color: col('#1c4a5c'), emissive: col('#2aa0d0'), emissiveIntensity: .35 }), -.05, .085, -.03, .06, .03, .04);
+  add(b, BOX, M.gun, .3, -.1, 0, .04, .1, .04); add(b, BOX, M.gun, -.08, -.1, 0, .04, .1, .04);
+  g.mag = part(b, .08, 0, -.075); g.mag.rotation.x = Math.PI / 2; add(g.mag, latheX([[0, -.04], [.065, -.04], [.07, -.03], [.07, .03], [.065, .04], [0, .04]], 18), M.gunOlive, 0, 0, 0).rotation.y = Math.PI / 2;
+  g.spin = add(g.mag, new THREE.TorusGeometry(.045, .008, 4, 10), M.darkMetal, 0, 0, -.042);
+  g.hand = add(g, BOX, M.glove, .02, -.12, .1, .08, .1, .12);
+  g.muzzle = new THREE.Vector3(0, 0, -.58);
+  g.anim = (R, dt, g) => {
+    // the drum unlatches and swings out to the side, a fresh one goes in, the feed motor spins up
+    const k = magTravel(R, .2, .38, .42, .575); g.mag.visible = k < .98; g.mag.position.z = g.mag.userData.home.z - k * .2; g.mag.position.y = g.mag.userData.home.y - k * .12;
+    g.spin.rotation.z += dt * (S.muzzle > 0 || (R > .75 && R < 1) ? 30 : 0);
+  };
+}
 // ---------- sound: everything is synthesized with Web Audio, so there are no files to load ----------
 const VOICE = { crawler: .7, drone: 1, spitter: 1.1, warrior: 1.6, warden: 1.9, brood: 3 };
 const SFX = (() => {
-  let ac = null, master, bus, windGain, windFilter, noiseBuf, muted = false, heart = 0;
+  let ac = null, master, bus, room, windGain, windFilter, noiseBuf, muted = false, heart = 0, reloadOut = null;
   const now = () => ac.currentTime;
   function init() {
     if (ac) { if (ac.state === 'suspended') ac.resume(); return; }
@@ -592,6 +665,11 @@ const SFX = (() => {
     const dl = ac.createDelay(), fb = ac.createGain(), wet = ac.createGain(), lp = ac.createBiquadFilter();
     dl.delayTime.value = .12; fb.gain.value = .28; wet.gain.value = .2; lp.type = 'lowpass'; lp.frequency.value = 1600;
     bus.connect(dl); dl.connect(lp); lp.connect(fb); fb.connect(dl); lp.connect(wet); wet.connect(master);
+    // and a long open-air tail, so shots and screeches ring out across the plain
+    const rev = ac.createConvolver(), n = Math.floor(ac.sampleRate * 2.2), ir = ac.createBuffer(2, n, ac.sampleRate);
+    for (let ch = 0; ch < 2; ch++) { const d = ir.getChannelData(ch); for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, 3.2) * Math.min(1, i / (ac.sampleRate * .015)); }
+    rev.buffer = ir; room = ac.createGain(); room.gain.value = .22; const rlp = ac.createBiquadFilter(); rlp.type = 'lowpass'; rlp.frequency.value = 3200;
+    bus.connect(room); room.connect(rlp); rlp.connect(rev); rev.connect(master);
     noiseBuf = ac.createBuffer(1, ac.sampleRate * 2, ac.sampleRate);
     const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
     const wn = ac.createBufferSource(); wn.buffer = noiseBuf; wn.loop = true;
@@ -599,10 +677,36 @@ const SFX = (() => {
     windGain = ac.createGain(); windGain.gain.value = 0;
     wn.connect(windFilter); windFilter.connect(windGain); windGain.connect(master); wn.start();
   }
-  function out(pan = 0, vol = 1) {
+  function out(pan = 0, vol = 1, wet = 0) {
     const g = ac.createGain(); g.gain.value = vol;
     if (ac.createStereoPanner) { const p = ac.createStereoPanner(); p.pan.value = clamp(pan, -1, 1); g.connect(p); p.connect(bus); } else g.connect(bus);
+    if (wet) { const w = ac.createGain(); w.gain.value = wet; g.connect(w); w.connect(room); }
     return g;
+  }
+  // soft-clipping for grit: gunpowder bark, torn throats
+  const curves = {};
+  function shaper(dest, k) {
+    if (!curves[k]) { const c = new Float32Array(1024); for (let i = 0; i < 1024; i++) { const x = i / 511.5 - 1; c[i] = Math.tanh(k * x) / Math.tanh(k); } curves[k] = c; }
+    const w = ac.createWaveShaper(); w.curve = curves[k]; w.oversample = '2x'; w.connect(dest); return w;
+  }
+  const click = (dest, t, f, v, q = 6, dur = .014) => noise(dest, t, dur, 'bandpass', f, f, q, v, .0005);
+  /**
+   * A creature voice: two detuned saws with frequency-modulated grit (`rough` Hz), plus breath,
+   * shaped by parallel formant bands and soft-clipped. f0 glides to f1 over the call.
+   */
+  function voice(o, t, dur, f0, f1, formants, v, rough = 45, breath = .25) {
+    const env = ac.createGain(), sum = ac.createGain(), sh = shaper(o, 3);
+    env.gain.setValueAtTime(.0001, t); env.gain.exponentialRampToValueAtTime(v, t + Math.min(.07, dur * .2));
+    env.gain.setValueAtTime(v, t + dur * .5); env.gain.exponentialRampToValueAtTime(.0001, t + dur);
+    sum.connect(env); env.connect(sh);
+    const bands = formants.map(([f, q, g]) => { const b = ac.createBiquadFilter(); b.type = 'bandpass'; b.frequency.value = f; b.Q.value = q; const bg = ac.createGain(); bg.gain.value = g; b.connect(bg); bg.connect(sum); return b; });
+    const mod = ac.createOscillator(), mg = ac.createGain(); mod.frequency.value = rough; mg.gain.value = f0 * .3; mod.connect(mg);
+    for (const det of [1, 1.013]) {
+      const c = ac.createOscillator(); c.type = 'sawtooth'; c.frequency.setValueAtTime(f0 * det, t); c.frequency.exponentialRampToValueAtTime(Math.max(30, f1 * det), t + dur);
+      mg.connect(c.frequency); for (const b of bands) c.connect(b); c.start(t); c.stop(t + dur + .05);
+    }
+    if (breath) { const nz = ac.createBufferSource(), ng = ac.createGain(); nz.buffer = noiseBuf; ng.gain.value = breath; nz.connect(ng); for (const b of bands) ng.connect(b); nz.start(t, Math.random() * 1.5); nz.stop(t + dur + .05); }
+    mod.start(t); mod.stop(t + dur + .05);
   }
   function noise(dest, t0, dur, type, f0, f1, q, v0, attack = .002) {
     const s = ac.createBufferSource(); s.buffer = noiseBuf;
@@ -628,39 +732,87 @@ const SFX = (() => {
     pause(b) { if (!ac) return; if (b) ac.suspend(); else ac.resume(); },
     toggleMute() { muted = !muted; if (master) master.gain.value = muted ? 0 : .8; return muted; },
     shot(kind) {
-      if (!live()) return; const t = now(), o = out(0, 1);
-      if (kind === 'pistol') { noise(o, t, .2, 'bandpass', 2400, 500, .8, .9); tone(o, t, .13, 'sine', 170, 48, .8); noise(o, t, .04, 'highpass', 5000, 5000, .5, .4); }
-      else if (kind === 'pulse') { noise(o, t, .1, 'bandpass', 3200, 1100, 1.2, .55); tone(o, t, .08, 'square', 440, 120, .16); tone(o, t, .1, 'sine', 120, 45, .5); }
-      else { noise(o, t, .12, 'bandpass', 1800, 500, 1, .6); tone(o, t, .1, 'sawtooth', 260, 70, .2); tone(o, t, .14, 'sine', 90, 40, .6); }
+      if (!live()) return; const t = now(), o = out(rand(-.04, .04), 1, kind === 'pistol' ? .5 : .65), d = rand(.93, 1.07), sh = shaper(o, 2.5);
+      noise(o, t, .012, 'highpass', 6500, 6500, .7, 1.1, .0005); // supersonic crack
+      if (kind === 'pistol') {
+        noise(sh, t, .17, 'bandpass', 1900 * d, 380, .9, .8); tone(o, t, .13, 'sine', 165 * d, 42, .85);
+        click(o, t + .03, 3300 * d, .28); click(o, t + .07, 2500 * d, .2, 5); // slide cycles and the case flicks out
+      } else if (kind === 'pulse') {
+        // the pulse rifle's gritty electronic bark: powder, a ringing caseless chamber, a zap
+        noise(sh, t, .095, 'bandpass', 2700 * d, 850, 1.1, .7); tone(o, t, .085, 'sine', 115 * d, 48, .6);
+        tone(o, t, .035, 'square', 1460 * d, 1300, .1); tone(o, t, .028, 'square', 2230 * d, 2100, .06); tone(o, t, .055, 'sawtooth', 540 * d, 170, .09);
+        click(o, t + .022, 4200, .15, 8);
+      } else {
+        noise(sh, t, .14, 'bandpass', 1350 * d, 330, .9, .85); tone(o, t, .15, 'sine', 92 * d, 36, 1);
+        tone(o, t, .07, 'sawtooth', 230, 250, .04); click(o, t + .018, 1900, .2); // feed motor and the belt advancing
+      }
     },
-    flame() { if (!live()) return; const t = now(), o = out(0, 1); noise(o, t, .16, 'lowpass', 900, 450, .7, .4, .02); noise(o, t, .12, 'bandpass', 2600, 1800, 2, .07, .02); },
-    empty() { if (!live()) return; tone(out(0, 1), now(), .04, 'square', 1800, 1500, .08); },
+    flame() {
+      if (!live()) return; const t = now(), o = out(0, 1, .3);
+      noise(o, t, .2, 'lowpass', 750, 420, .7, .42, .02); noise(o, t, .14, 'bandpass', 2900, 2000, 1.5, .08, .02);
+      for (let i = 0; i < 2; i++) click(o, t + rand(0, .12), rand(1200, 3500), rand(.06, .14), 3); // burning fuel crackle
+    },
+    empty() { if (!live()) return; const t = now(), o = out(0, 1); click(o, t, 3100, .18, 9, .01); click(o, t + .012, 1700, .08, 6, .02); },
+    /** Mechanical reload foley timed to the viewmodel animation; `cancelReload` cuts it if the weapon is switched. */
+    reload(kind) {
+      if (!live()) return; api.cancelReload(); const t = now(); reloadOut = out(.15, 1, .15); const o = reloadOut;
+      const out_ = (at, f = 2600) => { click(o, t + at, f, .3); noise(o, t + at + .01, .18, 'bandpass', 900, 2200, 2, .12, .02); };
+      const in_ = (at, f = 2200) => { noise(o, t + at, .06, 'bandpass', 1800, 900, 2, .15, .01); tone(o, t + at + .05, .07, 'sine', 180, 80, .35); click(o, t + at + .05, f, .4); };
+      if (kind === 'pistol') { out_(.18); in_(.72); click(o, t + 1.18, 3600, .5, 7); tone(o, t + 1.19, .12, 'triangle', 2900, 2700, .04); }
+      else if (kind === 'pulse') { out_(.3); in_(1.25); click(o, t + 1.75, 2400, .45); click(o, t + 1.9, 3100, .45); noise(o, t + 1.76, .14, 'bandpass', 1600, 3200, 3, .1); tone(o, t + 2.15, .06, 'square', 2000, 2000, .05); tone(o, t + 2.23, .06, 'square', 2600, 2600, .05); }
+      else if (kind === 'smart') { click(o, t + .35, 1500, .4, 4); out_(.85, 1700); in_(2.3, 1500); tone(o, t + 3.0, .8, 'sawtooth', 70, 320, .07, .3); noise(o, t + 3.0, .8, 'bandpass', 600, 2400, 2, .06, .3); }
+      else { noise(o, t + .25, .9, 'highpass', 4000, 6000, 1, .18, .02); out_(.9, 1500); in_(1.9, 1500); for (let i = 0; i < 3; i++) click(o, t + 2.45 + i * .07, 4500, .25, 10); noise(o, t + 2.65, .35, 'lowpass', 500, 200, 1, .35, .02); }
+    },
+    cancelReload() { if (reloadOut) { reloadOut.gain.value = 0; reloadOut = null; } },
     step(sprint) { if (!live()) return; noise(out(rand(-.1, .1), 1), now(), sprint ? .09 : .12, 'bandpass', rand(900, 1400), 380, 1.4, sprint ? .22 : .13, .005); },
     loot() { if (!live()) return; const t = now(), o = out(0, 1); noise(o, t, .25, 'bandpass', 700, 300, 2, .3, .01); tone(o, t + .08, .1, 'triangle', 880, 880, .1); tone(o, t + .16, .12, 'triangle', 1320, 1320, .1); },
     ui(ok = true) { if (!live()) return; const t = now(), o = out(0, 1); tone(o, t, .08, 'square', ok ? 660 : 220, ok ? 660 : 170, .06); if (ok) tone(o, t + .07, .1, 'square', 990, 990, .06); },
     build() { if (!live()) return; const t = now(), o = out(0, 1); noise(o, t, .22, 'lowpass', 600, 200, 1, .5); tone(o, t, .15, 'sine', 140, 70, .5); noise(o, t + .05, .08, 'highpass', 4000, 4000, 1, .2); },
     hurt() { if (!live()) return; const t = now(), o = out(0, 1); tone(o, t, .22, 'sine', 95, 45, .7); noise(o, t, .15, 'lowpass', 800, 300, 1, .4); },
     heal() { if (!live()) return; const t = now(), o = out(0, 1); noise(o, t, .3, 'highpass', 3000, 6000, 1, .15, .05); tone(o, t + .1, .3, 'sine', 520, 780, .08, .05); },
-    hiss(x, z, big = 1) { if (!live()) return; const pl = place(x, z, 45); if (!pl) return; const t = now(), o = out(pl.pan, pl.vol); noise(o, t, .55 * big, 'bandpass', 4200 / big, 2200 / big, 3, .5, .05); tone(o, t, .4 * big, 'sawtooth', 900 / big, 300 / big, .04, .05); },
-    screech(x, z, big = 1) {
-      if (!live()) return; const pl = place(x, z, 90); if (!pl) return; const t = now(), o = out(pl.pan, pl.vol * 1.3);
-      const car = ac.createOscillator(), mod = ac.createOscillator(), mg = ac.createGain(), g = ac.createGain(), f = ac.createBiquadFilter();
-      car.type = 'sawtooth'; car.frequency.setValueAtTime(1400 / big, t); car.frequency.exponentialRampToValueAtTime(480 / big, t + .6 * big);
-      mod.frequency.value = 37 / big; mg.gain.value = 600 / big; mod.connect(mg); mg.connect(car.frequency);
-      f.type = 'bandpass'; f.frequency.value = 1800 / big; f.Q.value = 1.5;
-      g.gain.setValueAtTime(.0001, t); g.gain.exponentialRampToValueAtTime(.35, t + .05); g.gain.exponentialRampToValueAtTime(.0001, t + .7 * big);
-      car.connect(f); f.connect(g); g.connect(o); car.start(t); mod.start(t); car.stop(t + .8 * big); mod.stop(t + .8 * big);
-      noise(o, t, .6 * big, 'highpass', 3000 / big, 3000 / big, 1, .18, .03);
+    hiss(x, z, big = 1) {
+      if (!live()) return; const pl = place(x, z, 45); if (!pl) return; const t = now(), o = out(pl.pan, pl.vol, .3), r = rand(.85, 1.15) / big, dur = rand(.6, 1.1) * big;
+      // breath through bared teeth, fluttering, with a low rattle in the chest under it
+      const trem = ac.createGain(), lfo = ac.createOscillator(), lg = ac.createGain(); trem.gain.value = .6; lfo.frequency.value = rand(18, 28); lg.gain.value = .4; lfo.connect(lg); lg.connect(trem.gain); trem.connect(o); lfo.start(t); lfo.stop(t + dur + .1);
+      noise(trem, t, dur, 'bandpass', 4300 * r, 2600 * r, 2.5, .55, dur * .3); noise(trem, t, dur, 'bandpass', 6800 * r, 5200 * r, 4, .25, dur * .3);
+      voice(o, t, dur, 95 * r, 70 * r, [[500 * r, 4, .6], [1300 * r, 6, .3]], .08, 30, .05);
     },
-    claw(x, z) { if (!live()) return; const pl = place(x, z, 30); if (!pl) return; const t = now(), o = out(pl.pan, pl.vol); noise(o, t, .08, 'highpass', 3500, 3500, 1, .5); noise(o, t + .06, .08, 'highpass', 3000, 3000, 1, .4); },
-    skitter(x, z) { if (!live()) return; const pl = place(x, z, 22); if (!pl) return; const t = now(), o = out(pl.pan, pl.vol * .5); for (let i = 0; i < 3; i++) noise(o, t + i * .045, .025, 'highpass', 5000, 5000, 1, .3); },
-    hit(x, z) { if (!live()) return; const pl = place(x, z, 60); if (!pl) return; noise(out(pl.pan, pl.vol), now(), .22, 'bandpass', 3000, 6000, 2, .25, .01); },
-    die(x, z, big = 1) { if (!live()) return; api.screech(x, z, big * 1.4); const pl = place(x, z, 60); if (!pl) return; noise(out(pl.pan, pl.vol), now() + .1, 1.2, 'bandpass', 5000, 2500, 2, .25, .1); },
+    screech(x, z, big = 1) {
+      if (!live()) return; const pl = place(x, z, 90); if (!pl) return; const t = now(), o = out(pl.pan, pl.vol * 1.3, .55), r = rand(.85, 1.2) / big, dur = (.5 + rand(0, .3)) * big;
+      voice(o, t, dur, 1500 * r, 620 * r, [[950 * r, 4, 1], [2600 * r, 7, .8], [4300 * r, 9, .5]], .38, 55 / big, .3);
+      noise(o, t, dur * .9, 'highpass', 3500 * r, 2800 * r, 1, .13, .03);
+      if (chance(.5)) voice(o, t + dur * .7, dur * .5, 2100 * r, 1700 * r, [[2400 * r, 8, 1], [5000 * r, 9, .4]], .14, 90, .2); // a trailing chitter
+    },
+    claw(x, z) {
+      if (!live()) return; const pl = place(x, z, 30); if (!pl) return; const t = now(), o = out(pl.pan, pl.vol, .2);
+      noise(o, t, .13, 'bandpass', 1400, 4800, 1.5, .35, .03); click(o, t + .11, 2200, .5, 4); tone(o, t + .11, .1, 'sine', 140, 60, .4);
+    },
+    skitter(x, z) {
+      if (!live()) return; const pl = place(x, z, 22); if (!pl) return; const t = now(), o = out(pl.pan, pl.vol * .55);
+      let at = 0; for (let i = 0, n = 3 + Math.floor(rand(0, 3)); i < n; i++) { at += rand(.025, .07); click(o, t + at, rand(2600, 5600), rand(.2, .38), 10, .01); }
+    },
+    hit(x, z) {
+      if (!live()) return; const pl = place(x, z, 60); if (!pl) return; const t = now(), o = out(pl.pan, pl.vol);
+      tone(o, t, .07, 'sine', 170, 60, .35); noise(o, t, .1, 'lowpass', 1400, 400, 1, .3, .003); // wet impact into chitin
+      noise(o, t + .04, .5, 'highpass', 5500, 7000, 1, .07, .05); // acid sizzle
+    },
+    die(x, z, big = 1) {
+      if (!live()) return; const pl = place(x, z, 70); if (!pl) return; const t = now(), o = out(pl.pan, pl.vol * 1.3, .6), r = rand(.85, 1.15) / big, dur = 1.1 * big;
+      voice(o, t, dur, 1300 * r, 210 * r, [[850 * r, 4, 1], [2300 * r, 6, .7], [3900 * r, 8, .35]], .42, 38 / big, .35);
+      // gurgling acid as it goes down, then the thud
+      const gg = ac.createGain(), lfo = ac.createOscillator(), lg = ac.createGain(); gg.gain.value = .3; lfo.frequency.value = rand(7, 12); lg.gain.value = .3; lfo.connect(lg); lg.connect(gg.gain); gg.connect(o); lfo.start(t + .4); lfo.stop(t + 1.8 * big);
+      noise(gg, t + .4, 1.3 * big, 'lowpass', 700, 250, 3, .5, .1);
+      tone(o, t + .55 * big, .25, 'sine', 75 / big, 32, .7); noise(o, t + .55 * big, .2, 'lowpass', 500, 150, 1, .4);
+    },
     spit(x, z) { if (!live()) return; const pl = place(x, z, 40); if (!pl) return; const t = now(), o = out(pl.pan, pl.vol); noise(o, t, .2, 'lowpass', 1200, 300, 4, .5); tone(o, t, .15, 'sine', 300, 120, .3); },
     splash() { if (!live()) return; noise(out(0, 1), now(), .5, 'bandpass', 4500, 2000, 1.5, .4, .01); },
-    turret(x, z) { if (!live()) return; const pl = place(x, z, 60); if (!pl) return; const t = now(), o = out(pl.pan, pl.vol * .8); noise(o, t, .09, 'bandpass', 2000, 800, 1, .5); tone(o, t, .07, 'square', 300, 100, .1); },
+    turret(x, z) { if (!live()) return; const pl = place(x, z, 60); if (!pl) return; const t = now(), o = out(pl.pan, pl.vol * .8, .5); noise(o, t, .01, 'highpass', 6000, 6000, .7, .6, .0005); noise(shaper(o, 2.5), t, .1, 'bandpass', 2000, 700, 1, .5); tone(o, t, .07, 'sine', 120, 50, .4); tone(o, t, .05, 'square', 300, 100, .06); },
     crash(x, z) { if (!live()) return; const pl = place(x, z, 70); if (!pl) return; const t = now(), o = out(pl.pan, pl.vol); noise(o, t, .6, 'lowpass', 1500, 120, 1, .7); tone(o, t, .5, 'sine', 80, 35, .7); },
-    roar(x, z) { if (!live()) return; const pl = place(x, z, 400) || { pan: 0, vol: .2 }; const t = now(), o = out(pl.pan, Math.max(.3, pl.vol)); tone(o, t, 2.4, 'sawtooth', 110, 52, .35, .3); tone(o, t, 2.4, 'sawtooth', 114, 50, .25, .3); noise(o, t, 2.4, 'lowpass', 600, 150, 1, .45, .3); },
+    roar(x, z) {
+      if (!live()) return; const pl = place(x, z, 400) || { pan: 0, vol: .2 }; const t = now(), o = out(pl.pan, Math.max(.3, pl.vol), .8);
+      voice(o, t, 2.6, 150, 62, [[380, 4, 1], [950, 5, .7], [2300, 6, .4]], .45, 28, .35);
+      tone(o, t, 2.6, 'sine', 48, 34, .5, .4); noise(o, t, 2.6, 'lowpass', 600, 150, 1, .4, .3);
+    },
     nightfall() { if (!live()) return; const t = now(), o = out(0, 1); tone(o, t, 3.5, 'sine', 55, 48, .5, .8); tone(o, t, 3.5, 'triangle', 82, 73, .2, .8); tone(o, t + .4, 3, 'sine', 330, 311, .05, 1); },
     dawn() { if (!live()) return; const t = now(), o = out(0, 1); tone(o, t, 2.5, 'sine', 220, 220, .08, .6); tone(o, t + .3, 2.5, 'sine', 330, 330, .06, .6); },
     ping(k) { if (!live()) return; const t = now(), o = out(0, 1), f = 1000 + k * 900; tone(o, t, .12, 'sine', f, f, .12, .003); tone(o, t, .12, 'sine', f * 2, f * 2, .03, .003); },
@@ -705,7 +857,7 @@ function newGame() {
     t: 0, day: 1, phase: 'day', phaseT: 0, kills: 0, tier: 1, over: false, won: false, wonAt: 0, shake: 0, muzzle: 0, recoil: 0,
     player: { x: BASE.x - 3, z: BASE.z + 6, yaw: 2.6, pitch: 0, r: .45, hp: 100, max: 100, spd: 5.2, cool: 0, hurt: 0, bob: 0, moving: false, sprint: false },
     inv: { scrap: 2, metal: 0, cells: 0, chips: 0, cores: 0, med: 0, ammo: 0 },
-    weapons: ['pistol'], wi: 0, gear: {}, research: {}, enemies: [], spits: [], structs: new Map(), crates,
+    weapons: ['pistol'], wi: 0, mags: { pistol: WEAPONS.pistol.mag }, reload: null, draw: 0, gear: {}, research: {}, enemies: [], spits: [], structs: new Map(), crates,
     noise: 0, buildMode: false, buildSel: 0, spawnQueue: [], wanderT: 0, raidT: 30, smokeT: 0, flashOn: true, brood: null, tips: {}, ghost: null, ghostType: null,
   };
   S.brood = spawn('brood', HIVE.x, HIVE.z, 'sleep'); S.brood.home = true;
@@ -778,7 +930,8 @@ addEventListener('keydown', e => {
   if (c === 'KeyF') S.flashOn = !S.flashOn;
   if (c === 'KeyB') { S.buildMode = !S.buildMode; if (S.buildMode) tip('build', 'Build mode: aim at the ground, left-click to place, right-click to remove, 1 to 4 to pick.'); }
   if (/^Digit[1-4]$/.test(c)) { S.buildSel = +c.slice(5) - 1; S.buildMode = true; }
-  if (c === 'KeyQ') { S.wi = (S.wi + 1) % S.weapons.length; S.buildMode = false; }
+  if (c === 'KeyQ') { selectWeapon(S.wi + 1); S.buildMode = false; }
+  if (c === 'KeyR' && !S.buildMode) startReload();
   if (c === 'KeyH') useMed();
   if (c === 'KeyM') toast(SFX.toggleMute() ? 'Sound off' : 'Sound on');
   if (c === 'KeyG') { quality = quality === 'high' ? 'low' : 'high'; try { localStorage.setItem('sc.quality', quality); } catch (_) { /* storage blocked */ } post.setQuality(quality); resize(); toast(quality === 'high' ? 'Graphics: high' : 'Graphics: low (faster)'); }
@@ -799,7 +952,7 @@ cv.addEventListener('mousedown', e => {
 });
 addEventListener('mouseup', () => mouse.down = false);
 cv.addEventListener('contextmenu', e => e.preventDefault());
-cv.addEventListener('wheel', e => { if (!running || S.weapons.length < 2) return; S.wi = (S.wi + (e.deltaY > 0 ? 1 : S.weapons.length - 1)) % S.weapons.length; }, { passive: true });
+cv.addEventListener('wheel', e => { if (!running || S.weapons.length < 2) return; selectWeapon(S.wi + (e.deltaY > 0 ? 1 : S.weapons.length - 1)); }, { passive: true });
 
 // ---------- actions ----------
 function nearestCrate() {
@@ -899,7 +1052,7 @@ function craftItem(id) {
   if (id === 'ammo') { S.inv.ammo += 30; return; }
   if (id === 'med') { S.inv.med++; return; }
   S.gear[id] = true;
-  if (WEAPONS[id]) { S.weapons.push(id); S.wi = S.weapons.length - 1; S.inv.ammo += 40; msg(`${WEAPONS[id].name} ready. Q switches weapons.`, 'good'); }
+  if (WEAPONS[id]) { S.weapons.push(id); S.mags[id] = WEAPONS[id].mag; selectWeapon(S.weapons.length - 1); S.inv.ammo += 40; msg(`${WEAPONS[id].name} ready. Q switches weapons.`, 'good'); }
   if (id === 'tracker') { $('radarBox').hidden = false; msg('Motion tracker online.', 'good'); }
   if (id === 'armor') { p.max += 50; p.hp += 50; }
   if (id === 'exo') { p.max += 100; p.hp += 100; p.spd += 1.2; }
@@ -966,6 +1119,7 @@ function update(dt) {
   const spd = p.spd * (p.sprint && mz > 0 ? 1.55 : 1);
   if (l > 0) { vx /= l; vz /= l; moveBody(p, vx * spd * dt, vz * spd * dt, p.r); p.bob += dt * spd * 1.6; p.moving = true; S.stepD = (S.stepD || 0) + spd * dt; if (S.stepD > (p.sprint ? 2.1 : 1.6)) { S.stepD = 0; SFX.step(p.sprint); } if (p.sprint) S.noise = Math.min(100, S.noise + 6 * dt); } else p.moving = false;
   p.cool -= dt; p.hurt = Math.max(0, p.hurt - dt);
+  S.draw = Math.max(0, S.draw - dt); if (S.reload && (S.reload.t -= dt) <= 0) finishReload();
   if (mouse.down && !S.buildMode && $('craft').hidden) fire();
 
   for (const s of S.structs.values()) {
@@ -1012,11 +1166,30 @@ function rayCast(o, d, maxD) {
   for (let t = .5; t < bt; t += .6) { const x = o.x + d.x * t, z = o.z + d.z * t; if (o.y + d.y * t < H(x, z)) { bt = t; best = null; break; } }
   return { e: best, t: bt };
 }
+// ---------- magazines ----------
+// Each gun holds its own magazine; reloading tops it up from the shared ammo reserve (the sidearm's is unlimited).
+const shotCost = (wid) => wid === 'flamer' ? WEAPONS.flamer.ammo : 1;
+function selectWeapon(i) {
+  const n = (i + S.weapons.length) % S.weapons.length; if (n === S.wi && !S.reload) return;
+  if (S.reload) { S.reload = null; SFX.cancelReload(); }
+  S.wi = n; S.draw = .45;
+}
+function startReload() {
+  const wid = S.weapons[S.wi], w = WEAPONS[wid];
+  if (S.reload || S.draw > 0 || S.mags[wid] >= w.mag) return;
+  if (w.ammo && S.inv.ammo < shotCost(wid)) { toast('No ammo to reload'); tip('ammo', 'Craft ammo packs at the workbench. The sidearm never runs dry.'); return; }
+  S.reload = { wid, t: w.reload, total: w.reload }; SFX.reload(wid);
+}
+function finishReload() {
+  const { wid } = S.reload, w = WEAPONS[wid], need = w.mag - S.mags[wid], take = w.ammo ? Math.min(need, Math.floor(S.inv.ammo)) : need;
+  if (w.ammo) S.inv.ammo -= take;
+  S.mags[wid] += take; S.reload = null;
+}
 function fire() {
   const p = S.player, wid = S.weapons[S.wi], w = WEAPONS[wid];
-  if (p.cool > 0) return;
-  if (w.ammo && S.inv.ammo < w.ammo) { p.cool = .4; SFX.empty(); toast('Out of ammo'); tip('ammo', 'Craft ammo packs at the workbench. The sidearm never runs dry.'); return; }
-  p.cool = w.rate; S.inv.ammo -= w.ammo; S.noise = Math.min(100, S.noise + w.noise);
+  if (p.cool > 0 || S.reload || S.draw > 0) return;
+  if (S.mags[wid] < shotCost(wid)) { p.cool = .35; SFX.empty(); if (!w.ammo || S.inv.ammo >= shotCost(wid)) startReload(); else { toast('Out of ammo'); tip('ammo', 'Craft ammo packs at the workbench. The sidearm never runs dry.'); } return; }
+  p.cool = w.rate; S.mags[wid] -= shotCost(wid); S.noise = Math.min(100, S.noise + w.noise);
   const g = VMS[wid]; _mz.copy(g.muzzle); g.localToWorld(_mz);
   const { o, d } = aimRay();
   if (wid === 'flamer') {
@@ -1203,6 +1376,7 @@ function environment(dt) {
   }
   sp.needsUpdate = true;
 }
+let vmSprint = 0;
 function updateCamera(dt) {
   const p = S.player, bobA = p.moving ? (p.sprint ? .07 : .04) : 0;
   const sx = S.shake ? rand(-1, 1) * S.shake * .08 : 0, sy = S.shake ? rand(-1, 1) * S.shake * .08 : 0;
@@ -1210,9 +1384,17 @@ function updateCamera(dt) {
   camera.rotation.set(p.pitch + S.recoil * .02, p.yaw, 0);
   const wid = S.weapons[S.wi];
   for (const k in VMS) VMS[k].visible = k === wid && !S.buildMode;
-  vm.position.set(.24 + Math.sin(p.bob * .5) * bobA * .3, -.24 - Math.abs(Math.sin(p.bob)) * bobA * .3, -.42 + S.recoil * .06);
-  vm.rotation.x = S.recoil * .12;
+  // weapon handling: breathing sway, lowered while sprinting, raised on draw, tipped over for the reload
+  const g = VMS[wid], R = S.reload && S.reload.wid === wid ? 1 - S.reload.t / S.reload.total : -1;
+  vmSprint = lerp(vmSprint, p.sprint && p.moving ? 1 : 0, Math.min(1, dt * 8));
+  const dk = S.draw / .45, tilt = R < 0 ? 0 : smooth(0, .12, R) * (1 - smooth(.86, 1, R)), auto = S.muzzle > 0 && wid !== 'pistol' ? 1 : 0;
+  vm.position.set(
+    .24 + Math.sin(p.bob * .5) * bobA * .3 + Math.sin(S.t * .9) * .003 - vmSprint * .05 - tilt * .09 + auto * rand(-.002, .002),
+    -.24 - Math.abs(Math.sin(p.bob)) * bobA * .3 + Math.sin(S.t * 1.7) * .004 - vmSprint * .05 - dk * dk * .32 + tilt * .03 + auto * rand(-.002, .002),
+    -.42 + S.recoil * .06 + tilt * .08);
+  vm.rotation.set(S.recoil * .12 - vmSprint * .2 - dk * .9 + tilt * .25, vmSprint * .55 + tilt * .2, vmSprint * .3 + tilt * .35);
   if (VMS.pistol.slide) VMS.pistol.slide.position.x = VMS.pistol.slideX - Math.min(1, S.recoil * 2.5) * .022;
+  g.anim?.(R, dt, g);
   if (S.muzzle > 0 && wid !== 'flamer') { _mz.copy(VMS[wid].muzzle); muzzleLight.position.copy(_mz).add(vm.position); }
   // build ghost
   if (S.buildMode) {
@@ -1275,7 +1457,7 @@ function hud() {
   for (const k of RES) $('r_' + k).textContent = S.inv[k];
   const wid = S.weapons[S.wi], w = WEAPONS[wid];
   if (S.buildMode) { const b = BUILDS[S.buildSel]; $('modeLbl').textContent = 'Building'; $('weapLbl').textContent = b.name.toUpperCase(); $('ammoTxt').innerHTML = costStr(b.cost); }
-  else { $('modeLbl').textContent = 'Weapon'; $('weapLbl').textContent = w.name.toUpperCase(); $('ammoTxt').textContent = w.ammo ? `Ammo ${Math.floor(S.inv.ammo)}` : 'Ammo ∞'; }
+  else { $('modeLbl').textContent = 'Weapon'; $('weapLbl').textContent = w.name.toUpperCase(); $('ammoTxt').textContent = S.reload ? 'Reloading…' : `${Math.floor(S.mags[wid])} / ${w.ammo ? Math.floor(S.inv.ammo) : '∞'}`; }
   $('medTxt').textContent = `Medkits ${S.inv.med}`;
   $('tierLbl').textContent = `Tier ${S.tier} · ${TIER_NAMES[S.tier]}`;
   $('locLbl').textContent = location();
@@ -1327,4 +1509,4 @@ $('btnStart').disabled = false; $('btnStart').textContent = 'Deploy';
 requestAnimationFrame(frame);
 
 // Dev-only handle for automated playtests (stripped from production builds).
-if (import.meta.env.DEV) Object.assign(window, { __S: () => S, __post: post, __api: { renderer, scene, MODELS, placeModel, buildStruct, togglePause, H, DOMES, RIGS, BASE, BENCH, loot, craftItem, startNight, hurtEnemy, spawn, placeStruct, camera, SFX } });
+if (import.meta.env.DEV) Object.assign(window, { __S: () => S, __post: post, __api: { renderer, scene, MODELS, placeModel, buildStruct, togglePause, selectWeapon, startReload, fire, H, DOMES, RIGS, BASE, BENCH, loot, craftItem, startNight, hurtEnemy, spawn, placeStruct, camera, SFX } });
