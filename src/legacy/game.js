@@ -1,4 +1,8 @@
 import * as THREE from 'three';
+import { createPostFX } from '../render/postfx';
+import { untonemap, usePerceptualFog, displaySpaceAlpha } from '../render/tonemap';
+
+usePerceptualFog();
 
 const $ = id => document.getElementById(id);
 const TAU = Math.PI * 2;
@@ -88,8 +92,13 @@ function H(x, z) {
 }
 
 // ---------- three setup ----------
-const renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: true, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+// No canvas MSAA: the post-processing chain renders into a multisampled target instead.
+const renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: false, powerPreference: 'high-performance' });
+// Graphics quality: high adds ambient occlusion and full-res bloom. G toggles it; the choice is remembered.
+let quality = 'high';
+try { if (localStorage.getItem('sc.quality') === 'low' || new URLSearchParams(location.search).get('q') === 'low') quality = 'low'; } catch (_) { /* storage blocked */ }
+const pixelRatio = () => Math.min(window.devicePixelRatio || 1, quality === 'high' ? 1.5 : 1);
+renderer.setPixelRatio(pixelRatio());
 renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05;
@@ -98,8 +107,9 @@ scene.fog = new THREE.FogExp2(col('#7f8b94'), .014);
 scene.background = scene.fog.color.clone();
 const camera = new THREE.PerspectiveCamera(74, 1, .08, 500);
 camera.rotation.order = 'YXZ';
+const post = createPostFX(renderer, scene, camera, quality);
 scene.add(camera);
-function resize() { const w = cv.clientWidth, h = cv.clientHeight; renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); }
+function resize() { const w = cv.clientWidth, h = cv.clientHeight; renderer.setPixelRatio(pixelRatio()); renderer.setSize(w, h, false); post.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix(); }
 addEventListener('resize', resize);
 
 // Three r155+ uses physical light units. LUX scales the prototype's tuned values to match the old look,
@@ -250,7 +260,7 @@ function buildRig(d, r) {
 let crashSmokeAt = [];
 function buildCrash() {
   const x = BASE.x - 4, z = BASE.z - 3, y = H(x, z), g = new THREE.Group(); g.position.set(x, y, z); g.rotation.y = .6; scene.add(g);
-  const scorch = new THREE.Mesh(new THREE.CircleGeometry(16, 32), new THREE.MeshBasicMaterial({ color: 0x000000, alphaMap: glowTex, transparent: true, opacity: .7, depthWrite: false }));
+  const scorch = new THREE.Mesh(new THREE.CircleGeometry(16, 32), displaySpaceAlpha(new THREE.MeshBasicMaterial({ color: 0x000000, alphaMap: glowTex, transparent: true, opacity: .7, depthWrite: false })));
   scorch.rotation.x = -Math.PI / 2; scorch.position.y = .06; g.add(scorch);
   const body = new THREE.Group(); body.rotation.z = .1; body.rotation.x = -.08; body.position.y = .9; g.add(body);
   mesh(BOX, M.hull, 0, 1.2, 0, 13, 3, 4.4, body);
@@ -337,7 +347,7 @@ const decals = [];
 const splatGeo = new THREE.CircleGeometry(1, 12);
 function splat(x, z, s, c = '#8fb33a') {
   let d = decals.length >= 80 ? decals.shift() : null;
-  if (!d) { const m = new THREE.Mesh(splatGeo, new THREE.MeshStandardMaterial({ color: col(c), emissive: col('#3c5a10'), emissiveIntensity: .5, roughness: .2, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 })); m.rotation.x = -Math.PI / 2; scene.add(m); d = { m }; }
+  if (!d) { const m = new THREE.Mesh(splatGeo, displaySpaceAlpha(new THREE.MeshStandardMaterial({ color: col(c), emissive: col('#3c5a10'), emissiveIntensity: .5, roughness: .2, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 }))); m.rotation.x = -Math.PI / 2; scene.add(m); d = { m }; }
   d.m.position.set(x, H(x, z) + .05, z); d.m.scale.set(s * rand(.8, 1.2), s * rand(.8, 1.2), 1); d.m.rotation.z = rand(0, TAU); d.m.material.opacity = .75; d.t = 40; decals.push(d);
 }
 
@@ -660,6 +670,7 @@ addEventListener('keydown', e => {
   if (c === 'KeyQ') { S.wi = (S.wi + 1) % S.weapons.length; S.buildMode = false; }
   if (c === 'KeyH') useMed();
   if (c === 'KeyM') toast(SFX.toggleMute() ? 'Sound off' : 'Sound on');
+  if (c === 'KeyG') { quality = quality === 'high' ? 'low' : 'high'; try { localStorage.setItem('sc.quality', quality); } catch (_) { /* storage blocked */ } post.setQuality(quality); resize(); toast(quality === 'high' ? 'Graphics: high' : 'Graphics: low (faster)'); }
 });
 addEventListener('keyup', e => keys.delete(e.code));
 addEventListener('blur', () => { keys.clear(); mouse.down = false; if (running && !S.over && !paused && $('craft').hidden) togglePause(true); });
@@ -1052,14 +1063,15 @@ function environment(dt) {
   const p = S.player, dk = darkness(), day = 1 - dk, left = DAY - S.phaseT;
   const duskK = S.phase === 'day' ? clamp(1 - left / 22, 0, 1) * (1 - dk) : 0;
   _c.copy(C_DAY).lerp(C_DUSK, duskK * .8).lerp(C_NIGHT, dk);
-  scene.fog.color.copy(_c); scene.background.copy(_c);
   scene.fog.density = lerp(.013, .03, dk);
   const sa = S.phase === 'day' ? (S.phaseT / DAY) * Math.PI * .9 + .15 : Math.PI;
   sun.position.set(p.x + Math.cos(sa) * 90, Math.max(8, Math.sin(sa) * 110), p.z - 50); sun.target.position.set(p.x, 0, p.z);
   sun.intensity = 1.7 * day * LUX; sun.color.set(col('#fff1dc')).lerp(col('#ffa060'), duskK);
   hemi.intensity = (.12 + .62 * day) * LUX; hemi.color.set(col('#b9c6d2')).lerp(col('#2a3a5a'), dk);
-  renderer.toneMappingExposure = lerp(1.05, 1.5, dk);
-  flashlight.intensity = S.flashOn ? lerp(.6, 2.6, dk) * PLUX : 0;
+  renderer.toneMappingExposure = lerp(1.05, .9, dk);
+  // Fog and sky go through tone mapping in post, so feed in the color that maps back to the tuned one.
+  untonemap(_c, renderer.toneMappingExposure, scene.fog.color); scene.background.copy(scene.fog.color);
+  flashlight.intensity = S.flashOn ? lerp(.6, 2.6, dk) * PLUX * .7 : 0;
   muzzleLight.intensity = S.muzzle > 0 ? 3 * PLUX : 0; muzzleLight.color.set(S.weapons[S.wi] === 'flamer' ? col('#ff8a32') : col('#ffd8a0'));
   S.muzzle = Math.max(0, S.muzzle - dt);
   fireLight.intensity = (1.4 + Math.sin(S.t * 13) * .3 + Math.sin(S.t * 7.3) * .3) * (.3 + dk) * PLUX;
@@ -1174,7 +1186,7 @@ function frame(now) {
     if (!paused) { environment(dt); stepSprites(dt); for (const tr of tracers) if (tr.t > 0) { tr.t -= dt; if (tr.t <= 0) tr.l.visible = false; } }
     if (!running) { S.player.yaw += dt * .05; }
     updateCamera(dt);
-    renderer.render(scene, camera);
+    post.setDarkness(darkness()); post.setHurt(S.player.hurt / .3 * .6); post.render(dt);
     if (running && !paused) { SFX.ambience(darkness(), dt); trackerAudio(dt); }
     if (running) { drawRadar(); drawCompass(); hudT -= dt; if (hudT <= 0) { hudT = .1; hud(); } }
   }
@@ -1202,4 +1214,4 @@ $('btnStart').disabled = false; $('btnStart').textContent = 'Deploy';
 requestAnimationFrame(frame);
 
 // Dev-only handle for automated playtests (stripped from production builds).
-if (import.meta.env.DEV) Object.assign(window, { __S: () => S, __api: { craftItem, startNight, hurtEnemy, spawn, placeStruct, camera, SFX } });
+if (import.meta.env.DEV) Object.assign(window, { __S: () => S, __post: post, __api: { renderer, scene, craftItem, startNight, hurtEnemy, spawn, placeStruct, camera, SFX } });
