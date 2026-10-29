@@ -83,6 +83,17 @@ export function createPostFX(renderer: THREE.WebGLRenderer, scene: THREE.Scene, 
   ao.blendIntensity = 0.85;
   ao.updateGtaoMaterial({ radius: 0.9, distanceExponent: 1.4, thickness: 1.2, scale: 1.1, samples: 12 });
   ao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 12 });
+  // GTAO draws the scene into its own depth and normal buffers, and by default only skips points and
+  // lines. Sprites (muzzle flash, smoke) and see-through surfaces (glass, decals) would land there
+  // as solid quads and get shaded as dark boxes, so leave them out too.
+  const hideFromAO = (o: THREE.Object3D) => {
+    const m = (o as THREE.Mesh).material as THREE.Material | undefined;
+    return (o as THREE.Points).isPoints || (o as THREE.Line).isLine || (o as THREE.Sprite).isSprite || (!!m && !Array.isArray(m) && m.transparent && !m.depthWrite);
+  };
+  const aoInternals = ao as unknown as { _overrideVisibility(): void; _visibilityCache: THREE.Object3D[] };
+  aoInternals._overrideVisibility = () => {
+    scene.traverse((o) => { if (o.visible && hideFromAO(o)) { o.visible = false; aoInternals._visibilityCache.push(o); } });
+  };
   // Only bright HDR sources bloom: muzzle flash, lamps, floodlights, Skarn acid, the bench screen.
   const sanitize = new ShaderPass(SanitizeShader);
   const bloom = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.3, 0.4, 1.0);
