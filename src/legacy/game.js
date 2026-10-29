@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { createPostFX } from '../render/postfx';
 import { untonemap, usePerceptualFog, displaySpaceAlpha } from '../render/tonemap';
 import { loadPBR, loadEnvironment, triplanar, terrainMaterial } from '../render/materials';
+import { loft, plate, latheX } from '../render/shapes';
+import { skinSet, skarnGeometry } from '../render/skarn';
 import { loadModels, placeModel, setDarkened, setMaterial, tinted } from '../render/models';
 
 usePerceptualFog();
@@ -130,8 +132,8 @@ const fireLight = new THREE.PointLight(col('#ff8a3a'), 1.6 * PLUX, 24, 0); scene
 const floodLights = Array.from({ length: 4 }, () => { const l = new THREE.PointLight(col('#ffe2b0'), 0, 30, 0); scene.add(l); return l; });
 
 // CC0 PBR sets from Poly Haven (see CREDITS.md) and an overcast HDRI for image-based lighting.
-const [TX_GROUND, TX_SNOW, TX_ROCK, TX_METAL, TX_CONCRETE, ENV, MODELS] = await Promise.all([
-  ...['ground', 'snow', 'rock', 'metal', 'concrete'].map(n => loadPBR(renderer, n)),
+const [TX_GROUND, TX_SNOW, TX_ROCK, TX_METAL, TX_CONCRETE, TX_HULL, ENV, MODELS] = await Promise.all([
+  ...['ground', 'snow', 'rock', 'metal', 'concrete', 'hull'].map(n => loadPBR(renderer, n)),
   loadEnvironment(renderer, 'overcast_1k.hdr'),
   loadModels(renderer),
 ]);
@@ -269,28 +271,113 @@ function buildRig(d, r) {
   prop('portable_generator', -4.5, .6, 4, { scale: 1.2 }, g, r() * TAU);
 }
 let crashSmokeAt = [];
+// UD-17 'Kestrel', the FEC dropship the marine rode down: olive hull panels, soot, a torn-off engine pod.
+const SHIP = {
+  hull: triplanar(new THREE.MeshStandardMaterial({ color: col('#4f5549'), roughness: .8, metalness: .3 }), TX_HULL, { scale: .3, normalStrength: 1.1, useMetal: .4 }),
+  belly: triplanar(new THREE.MeshStandardMaterial({ color: col('#3c4038'), roughness: .8, metalness: .3 }), TX_HULL, { scale: .38, normalStrength: 1.3, useMetal: .5 }),
+  soot: triplanar(new THREE.MeshStandardMaterial({ color: col('#1d1b19'), roughness: .9, metalness: .2 }), TX_HULL, { scale: .38, normalStrength: 1.5 }),
+  glass: new THREE.MeshPhysicalMaterial({ color: col('#0b1216'), roughness: .06, metalness: .2, clearcoat: 1, clearcoatRoughness: .05 }),
+  inside: new THREE.MeshStandardMaterial({ color: col('#0c0d0e'), roughness: .9 }),
+  ember: new THREE.MeshStandardMaterial({ color: col('#120804'), emissive: col('#c2400f'), emissiveIntensity: .7, roughness: .8 }),
+  nav: new THREE.MeshStandardMaterial({ color: col('#1c5a2a'), emissive: col('#3cff6a'), emissiveIntensity: 1.5 }),
+};
+// stencilled unit markings and hazard chevrons, drawn once
+const markTex = canvasTex(512, 128, (g, w, h) => {
+  g.clearRect(0, 0, w, h); g.fillStyle = 'rgba(214,206,182,.85)'; g.font = 'bold 74px "Arial Narrow", Arial, sans-serif'; g.textBaseline = 'middle';
+  g.fillText('FEC', 12, 52); g.font = 'bold 38px Arial, sans-serif'; g.fillText('UD-17  KESTREL', 178, 40); g.font = '22px Arial, sans-serif'; g.fillText('FRONTIER EXPEDITIONARY CORPS', 180, 82);
+  g.fillStyle = 'rgba(200,150,40,.85)'; for (let i = 0; i < 12; i++) { g.beginPath(); g.moveTo(i * 44, 128); g.lineTo(i * 44 + 22, 128); g.lineTo(i * 44 + 44, 106); g.lineTo(i * 44 + 22, 106); g.fill(); }
+});
+const hazardTex = canvasTex(256, 32, (g, w, h) => { g.fillStyle = '#c69a28'; g.fillRect(0, 0, w, h); g.fillStyle = '#1a1a18'; for (let i = -1; i < 9; i++) { g.beginPath(); g.moveTo(i * 32, h); g.lineTo(i * 32 + 16, h); g.lineTo(i * 32 + 32, 0); g.lineTo(i * 32 + 16, 0); g.fill(); } });
+function decal(tex, w, h, parent, x, y, z, ry, opacity = 1) {
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshStandardMaterial({ map: tex, transparent: true, opacity, roughness: .8, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4 }));
+  m.position.set(x, y, z); m.rotation.y = ry; parent.add(m); return m;
+}
+function part(geo, mat, parent, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0) {
+  const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.rotation.set(rx, ry, rz); m.castShadow = true; m.receiveShadow = true; parent.add(m); return m;
+}
 function buildCrash() {
   const x = BASE.x - 4, z = BASE.z - 3, y = H(x, z), g = new THREE.Group(); g.position.set(x, y, z); g.rotation.y = .6; scene.add(g);
   const scorch = new THREE.Mesh(new THREE.CircleGeometry(16, 32), displaySpaceAlpha(new THREE.MeshBasicMaterial({ color: 0x000000, alphaMap: glowTex, transparent: true, opacity: .7, depthWrite: false })));
   scorch.rotation.x = -Math.PI / 2; scorch.position.y = .06; g.add(scorch);
-  const body = new THREE.Group(); body.rotation.z = .1; body.rotation.x = -.08; body.position.y = .9; g.add(body);
-  mesh(BOX, M.hull, 0, 1.2, 0, 13, 3, 4.4, body);
-  mesh(BOX, M.hull, -1, 2.9, 0, 9, .6, 3.6, body);
-  const nose = mesh(CONE, M.hull, 8.3, 1.1, 0, 2.2, 3.6, 2.2, body); nose.rotation.z = -Math.PI / 2; nose.scale.set(2.1, 3.6, 1.5);
-  mesh(BOX, new THREE.MeshStandardMaterial({ color: col('#1d3442'), roughness: .1, metalness: .5 }), 7.1, 2.0, 0, 1.6, .7, 2.6, body);
-  const w1 = mesh(BOX, M.hull, -1, 1.4, 4.4, 4.2, .25, 4.2, body); w1.rotation.y = .3; w1.rotation.x = .25;
-  const w2 = mesh(BOX, M.burnt, -2, .3, -3.8, 3, .2, 2.2, body); w2.rotation.x = -.4;
-  for (const zz of [-1.6, 1.6]) { const e = mesh(CYLS, M.darkMetal, -7.2, 1.4, zz, .9, 2.4, .9, body); e.rotation.z = Math.PI / 2; mesh(CYLS, M.burnt, -8.45, 1.4, zz, .7, .1, .7, body).rotation.z = Math.PI / 2; }
-  for (let i = 0; i < 6; i++) mesh(BOX, M.burnt, -5 + i * 2, 1.2 + rand(-1, 1), 2.25, 1.2, 1, .05, body, false);
-  const beacon = mesh(SPH_LO, M.red, 1, 3.4, 0, .18, .18, .18, body, false); beacon.userData.beacon = true; M.red.userData.mesh = beacon;
-  for (let i = 0; i < 26; i++) { const a = rand(0, TAU), m2 = rand(7, 16); const b = mesh(BOX, chance(.5) ? M.hull : M.burnt, Math.cos(a) * m2, .2, Math.sin(a) * m2, rand(.3, 1.4), rand(.1, .5), rand(.3, 1)); b.rotation.y = rand(0, TAU); g.add(b); }
+  // nose dug in, rolled onto its broken side
+  const body = new THREE.Group(); body.rotation.set(-.07, 0, -.06); body.position.y = -.25; g.add(body);
+
+  // fuselage, cockpit glass and dorsal spine, lofted from cross-sections (nose at +x)
+  part(loft([
+    { x: -8, w: 3.1, h: 2.7, y: 1.75, belly: .25 }, { x: -7.2, w: 3.7, h: 3.1, y: 1.75, belly: .25 }, { x: -3, w: 4.1, h: 3.3, y: 1.75, belly: .25 },
+    { x: 1.5, w: 3.9, h: 3.1, y: 1.7, belly: .25 }, { x: 4, w: 3.3, h: 2.6, y: 1.6, belly: .25 }, { x: 6, w: 2.5, h: 2.0, y: 1.5, belly: .2 },
+    { x: 7.6, w: 1.5, h: 1.25, y: 1.4, n: 3, belly: .1 }, { x: 8.7, w: .35, h: .3, y: 1.35, n: 2 },
+  ]), SHIP.hull, body);
+  part(loft([{ x: -8.05, w: 3.0, h: 1.0, y: .55, n: 6 }, { x: 4.5, w: 3.2, h: 1.0, y: .5, n: 6 }, { x: 7, w: 1.8, h: .7, y: .8, n: 4 }]), SHIP.belly, body);
+  part(loft([{ x: 4.3, w: 1.9, h: .6, y: 2.75, n: 3 }, { x: 5.4, w: 2.0, h: 1.3, y: 2.55, n: 3 }, { x: 6.6, w: 1.5, h: 1.1, y: 2.15, n: 3 }, { x: 7.5, w: .7, h: .5, y: 1.8, n: 2.5 }], 24), SHIP.glass, body);
+  for (const fx of [5.0, 5.9, 6.7]) part(BOX, M.darkMetal, body, fx, 2.6 - (fx - 5) * .38, 0, 0, 0, -.5 - (fx - 5) * .2).scale.set(.08, .5, 2.05 - (fx - 5) * .5);
+  part(loft([{ x: -7.6, w: 1.3, h: .5, y: 3.35, n: 6 }, { x: -6.8, w: 1.7, h: .9, y: 3.4, n: 6 }, { x: 1, w: 1.7, h: .9, y: 3.35, n: 6 }, { x: 3.4, w: .9, h: .3, y: 3.1, n: 4 }]), SHIP.hull, body);
+  for (let i = 0; i < 5; i++) part(BOX, SHIP.inside, body, -5.5 + i * .55, 3.86, 0).scale.set(.32, .04, 1.2);
+  const beacon = mesh(SPH_LO, M.red, -1.5, 3.95, 0, .14, .14, .14, body, false); beacon.userData.beacon = true; M.red.userData.mesh = beacon;
+  part(CYLS, M.darkMetal, body, .8, 4.3, .3).scale.set(.03, 1.2, .03);
+
+  // stub wings: starboard intact with its nav light, port snapped short with a jagged edge
+  part(plate([[-3.4, 1.7], [1.2, 1.7], [.4, 5.4], [-2.2, 5.4]], .22), SHIP.hull, body, 0, 1.35, 0, 0, 0, 0).rotation.x = -.12;
+  mesh(SPH_LO, SHIP.nav, -.9, 1.55, 5.45, .09, .09, .09, body, false);
+  part(plate([[-3.4, -1.7], [1.2, -1.7], [.7, -2.9], [.1, -3.3], [-.5, -2.8], [-1.3, -3.6], [-2.2, -3.1], [-2.9, -3.4]], .22), SHIP.soot, body, 0, 1.35, 0, .1);
+
+  // twin tail fins, canted out
+  for (const side of [-1, 1]) part(plate([[-8.2, 0], [-5.6, 0], [-6.9, 2.2], [-8.1, 2.2]], .16), SHIP.hull, body, 0, 3.3, side * .55, -Math.PI / 2 + side * .38);
+
+  // engine pods on pylons: starboard still attached and burning, port one torn off and lying in the snow
+  const pod = latheX([[0, -.05], [.5, 0], [.62, .12], [.82, .5], [.86, 1.2], [.86, 3.3], [.74, 3.9], [.55, 4.15], [.5, 4.15], [.5, 3.95], [0, 3.95]], 28);
+  const nozzle = latheX([[.47, 0], [.6, -.35], [.62, -.45], [.5, -.45], [.38, -.1], [0, -.1]], 24);
+  const engine = (parent, burnt) => {
+    const e = new THREE.Group(); parent.add(e);
+    part(pod, burnt ? SHIP.soot : SHIP.hull, e); part(nozzle, M.darkMetal, e);
+    const core = part(new THREE.CircleGeometry(.4, 20), burnt ? SHIP.inside : SHIP.ember, e, -.1, 0, 0, 0, -Math.PI / 2);
+    part(new THREE.CircleGeometry(.5, 20), SHIP.inside, e, 4.16, 0, 0, 0, Math.PI / 2);
+    for (let i = 0; i < 3; i++) part(new THREE.TorusGeometry(.865, .025, 6, 28), M.darkMetal, e, 1.4 + i * .8, 0, 0, 0, Math.PI / 2);
+    return { e, core };
+  };
+  const right = engine(body, false); right.e.position.set(-7.4, 2.55, 2.75);
+  part(plate([[-6.6, 1.6], [-3.9, 1.6], [-4.4, 2.5], [-6.6, 2.5]], .3), SHIP.hull, body, 0, 2.55, 0);
+  part(plate([[-6.6, -1.6], [-4.6, -1.6], [-5.0, -2.0], [-5.5, -1.85], [-6.1, -2.1], [-6.6, -1.9]], .3), SHIP.soot, body, 0, 2.55, 0);
+  const left = engine(g, true); left.e.position.set(-11.5, .78, -6.5); left.e.rotation.set(.25, -.9, .12);
+
+  // rear ramp dropped open onto the snow, with the dark hold behind it
+  part(BOX, SHIP.inside, body, -8.06, 1.55, 0).scale.set(.04, 2.0, 2.4);
+  const ramp = new THREE.Group(); ramp.position.set(-8, .5, 0); ramp.rotation.z = -.42; body.add(ramp);
+  part(BOX, M.deck, ramp, -1.4, 0, 0).scale.set(2.8, .14, 2.3);
+  decal(hazardTex, 2.3, .22, ramp, -2.72, .075, 0, Math.PI / 2).rotation.x = -Math.PI / 2;
+  for (const side of [-1, 1]) part(CYLS, M.darkMetal, ramp, -.4, .35, side * 1.05, 0, 0, 1.1).scale.set(.06, 1.1, .06);
+
+  // hull breach on the port side: soot, a dark hole, ribs showing and plating peeled out
+  const breach = new THREE.Group(); breach.position.set(-.6, 1.5, -2.03); body.add(breach);
+  part(new THREE.CircleGeometry(1.2, 9), SHIP.inside, breach, 0, 0, -.02, 0, Math.PI).scale.set(1.3, .85, 1);
+  for (let i = 0; i < 4; i++) part(new THREE.TorusGeometry(1.75, .05, 5, 12, 1.4), M.darkMetal, breach, -1.1 + i * .7, .1, 1.95, 0, Math.PI / 2, -.7);
+  for (const [px, py, rx, rz, w] of [[-1.2, .7, -.9, .2, .9], [1.1, -.5, -1.1, -.3, .7], [.4, .9, -.7, .5, .6], [-.6, -.8, -1.2, 0, .8]]) part(BOX, SHIP.soot, breach, px, py, -.25, rx, 0, rz).scale.set(w, .04, .6);
+  decal(smokeTex, 6, 3.6, body, -.6, 1.7, -2.07, Math.PI, .9).material.color.setRGB(0, 0, 0);
+
+  // markings on both flanks
+  decal(markTex, 3.4, .85, body, 1.6, 1.95, 1.96, 0, .9);
+  decal(markTex, 3.4, .85, body, 3.0, 1.95, -1.93, Math.PI, .9);
+
+  // nose gear folded under, the mains snapped
+  part(CYLS, M.darkMetal, body, 5.6, .45, 0, 0, 0, 1.2).scale.set(.12, 1.2, .12);
+  part(CYLS, M.burnt, body, 5.1, .3, .5, Math.PI / 2, 0, 0).scale.set(.32, .25, .32);
+
+  // wreckage strewn behind: hull plates and the port wing's tip
+  part(plate([[0, 0], [2.1, 0], [1.6, 1.4], [.3, 1.1]], .18), SHIP.soot, g, -4.5, .25, -6.5, .15, .7, .1);
+  for (let i = 0; i < 18; i++) {
+    const a = rand(0, TAU), m2 = rand(7, 16), w = rand(.4, 1.4), d = rand(.3, 1);
+    const b = part(plate([[0, 0], [w, 0], [w * rand(.6, 1), d], [rand(0, .3), d * rand(.6, 1)]], rand(.04, .08), .015), chance(.5) ? SHIP.hull : SHIP.soot, g, Math.cos(a) * m2, .08, Math.sin(a) * m2, rand(-.3, .3), rand(0, TAU), rand(-.3, .3));
+    b.castShadow = w > .8;
+  }
   // what the marine dragged out of the wreck
   for (const [name, px, pz, ry, sc] of [['old_military_crate', 2, 5.4, .2, 1], ['ammo_box', 3.4, 5.9, 1.1, 1.1], ['ammo_box', 3.6, 5.3, .4, 1.1], ['medical_box', 1.1, 6.3, -.5, 1],
     ['metal_jerrycan', -1.5, 5.6, 2, 1.1], ['metal_jerrycan', -2, 5.9, 2.4, 1.1], ['propane_tank', -3.4, 5.2, 0, 1.1], ['barrel_01', 5.6, -4.8, 0, 1.1], ['barrel_01', 6.3, -4.4, 1, 1.1]]) {
     prop(name, px, 0, pz, { scale: sc }, g, ry);
   }
   g.updateMatrixWorld(true);
-  const ep = new THREE.Vector3(-8.6, 1.4, 0).applyMatrix4(body.matrixWorld);
+  // the hull blocks movement and building like a row of boulders
+  for (let k = -7.5; k <= 7.5; k += 2.5) { const p = new THREE.Vector3(k, 0, 0).applyMatrix4(body.matrixWorld); rocks.push({ x: p.x, z: p.z, r: k > 5 ? 1.4 : 2.1, y: p.y }); }
+  const ep = new THREE.Vector3(-.3, 0, 0).applyMatrix4(right.e.matrixWorld);
   fireLight.position.set(ep.x, ep.y + 1, ep.z);
   crashSmokeAt = [ep];
 }
@@ -374,36 +461,37 @@ function seg(m, ax, ay, az, bx, by, bz, th) {
   _v.set(bx - ax, by - ay, bz - az); const L = _v.length() || .001;
   m.position.set((ax + bx) / 2, (ay + by) / 2, (az + bz) / 2); m.scale.set(th, L, th); m.quaternion.setFromUnitVectors(_up, _v.divideScalar(L));
 }
+const SKIN = skinSet();
+M.teeth = new THREE.MeshStandardMaterial({ color: col('#9a968c'), roughness: .3, metalness: .5 });
 function buildSkarn(type) {
-  const d = ED[type], s = d.r, g = new THREE.Group(); g.rotation.order = 'YXZ';
-  const mat = new THREE.MeshStandardMaterial({ color: col(d.col), roughness: .26, metalness: .45, emissive: new THREE.Color(0) });
+  const d = ED[type], s = d.r, G = skarnGeometry(type, s), g = new THREE.Group(); g.rotation.order = 'YXZ';
+  // wet black hide: ribbed and veined by the triplanar skin set, with a clearcoat sheen over it
+  const mat = triplanar(new THREE.MeshPhysicalMaterial({ color: col(d.col).multiplyScalar(1.6), roughness: .5, metalness: .25, clearcoat: 1, clearcoatRoughness: .35, emissive: new THREE.Color(0) }), SKIN, { scale: 2.4 / s, normalStrength: 1.2, ao: .7 });
   const add = (geo, x, y, z, sx, sy, sz, m = mat) => mesh(geo, m, x, y, z, sx, sy, sz, g, true);
   const out = { g, mat, tail: [], legs: [] };
-  if (type === 'crawler') {
-    add(SPH, 0, s * .55, 0, s * .8, s * .3, s * .7);
-    add(SPH, s * .7, s * .55, 0, s * .35, s * .25, s * .3);
-  } else {
-    add(SPH, -s * .1, s * .95, 0, s * .95, s * .45, s * .5);
-    add(SPH, s * .72, s * 1.05, 0, s * .5, s * .42, s * .42);
-    for (let i = 0; i < 4; i++) add(SPH_LO, -s * .65 + i * s * .32, s * 1.2, 0, s * .12, s * .3, s * .52);
-    const head = add(SPH, s * 1.75, s * 1.22, 0, type === 'brood' ? s * .85 : s * 1.15, s * .32, s * .3); head.rotation.z = -.18;
-    add(SPH_LO, s * 2.65, s * 1.02, 0, s * .16, s * .07, s * .1, M.darkMetal);
-  }
-  if (type === 'drone' || type === 'warrior' || type === 'warden') {
-    for (const side of [-1, 1]) for (let j = 0; j < 2; j++) { const t = add(CYL, -s * .1 - j * s * .4, s * 1.55, side * s * .24, s * .07, s * .8, s * .07); t.rotation.z = 1.05 + j * .15; t.rotation.x = side * .45; }
-  }
-  if (type === 'spitter') add(SPH, -s * .45, s * 1.3, 0, s * .55, s * .45, s * .45, M.acidSac);
-  if (type === 'warden') { const c = add(SPH, s * .7, s * 1.55, 0, s * 1.0, s * .12, s * .7); c.rotation.z = .5; }
+  add(G.body, 0, 0, 0, 1, 1, 1);
+  if (type !== 'crawler') add(G.ribs, 0, 0, 0, 1, 1, 1);
+  for (const t of G.tubes) add(t, 0, 0, 0, 1, 1, 1);
+  // head on the neck, tipped down a little, with teeth along the jaw line
+  const head = new THREE.Group(); g.add(head);
+  if (type === 'crawler') head.position.set(s * .95, s * .58, 0); else head.position.set(s * 1.2, s * 1.18, 0);
+  head.rotation.z = type === 'crawler' ? -.05 : -.06;
+  mesh(G.cranium, mat, 0, 0, 0, 1, 1, 1, head, true); mesh(G.jaw, mat, 0, 0, 0, 1, 1, 1, head, true);
+  const hs = type === 'crawler' ? s * .4 : type === 'brood' ? s * .6 : s * .62;
+  for (let i = 0; i < 7; i++) for (const side of [-1, 1]) mesh(G.tooth, M.teeth, hs * (.36 + i * .065), -hs * .13, side * hs * (.11 - i * .012), 1, 1, 1, head, false);
+  if (type === 'spitter') { const sac = add(SPH, -s * .45, s * 1.35, 0, s * .5, s * .42, s * .42, M.acidSac); sac.rotation.z = .3; }
+  if (type === 'warden') for (let i = -2; i <= 2; i++) { const p = new THREE.Group(); p.position.set(-.3 * s, .35 * s, 0); p.rotation.order = 'YZX'; p.rotation.y = i * .28; p.rotation.z = .35 + Math.abs(i) * .08; head.add(p); mesh(G.crest, mat, 0, 0, 0, 1, 1, 1, p, true); }
   if (type === 'brood') {
-    for (let i = -4; i <= 4; i++) { const p = new THREE.Group(); p.position.set(s * .9, s * 1.35, 0); p.rotation.order = 'YZX'; p.rotation.y = i * .2; p.rotation.z = .55 + Math.abs(i) * .05; g.add(p); mesh(BOX, mat, -s * .75, 0, 0, s * 1.5, s * .05, s * .32, p, true); }
-    for (const side of [-1, 1]) { const a = new THREE.Mesh(CYL, mat); g.add(a); a.castShadow = true; out.legs.push({ side, j: -1, a, b: mesh(CYL, mat, 0, 0, 0, 1, 1, 1, g) }); }
+    for (let i = -4; i <= 4; i++) { const p = new THREE.Group(); p.position.set(s * .9, s * 1.35, 0); p.rotation.order = 'YZX'; p.rotation.y = i * .2; p.rotation.z = .55 + Math.abs(i) * .05; g.add(p); mesh(G.crest, mat, 0, 0, 0, 1, 1, 1, p, true); }
     out.sac = add(SPH, -s * 2.8, s * .85, 0, s * 2.0, s * .9, s * 1.15, M.egg);
   }
+  // grasping forearms under the head
+  if (type !== 'crawler') for (const side of [-1, 1]) out.legs.push({ side, j: -1, a: add(G.legUpper, 0, 0, 0, 1, 1, 1), b: add(G.legLower, 0, 0, 0, 1, 1, 1) });
   const n = type === 'brood' ? 11 : 9;
-  for (let i = 0; i < n; i++) out.tail.push(add(SPH_LO, 0, 0, 0, 1, 1, 1));
-  out.tip = add(CONE, 0, 0, 0, s * .12, s * .5, s * .05); out.tip.rotation.z = Math.PI / 2;
+  for (let i = 0; i < n; i++) out.tail.push(add(G.vertebra, 0, 0, 0, 1, 1, 1));
+  out.tip = add(G.blade, 0, 0, 0, 1, 1, 1);
   const pairs = type === 'crawler' ? 4 : type === 'brood' ? 3 : 2;
-  for (const side of [-1, 1]) for (let j = 0; j < pairs; j++) out.legs.push({ side, j, a: add(CYL, 0, 0, 0, 1, 1, 1), b: add(CYL, 0, 0, 0, 1, 1, 1) });
+  for (const side of [-1, 1]) for (let j = 0; j < pairs; j++) out.legs.push({ side, j, a: add(G.legUpper, 0, 0, 0, 1, 1, 1), b: add(G.legLower, 0, 0, 0, 1, 1, 1) });
   return out;
 }
 function animSkarn(e) {
@@ -413,12 +501,12 @@ function animSkarn(e) {
   for (let i = 0; i < n; i++) {
     const k = (i + 1) / n, x = -s * .85 - k * tl, y = (e.type === 'crawler' ? s * .5 : s * .95) + Math.sin(k * 2.4) * s * .45 - k * k * s * .3;
     const z = dead ? Math.sin(k * 3) * s * .8 * k : Math.sin(t * 1.4 - k * 4.2) * s * .55 * k, rr = s * .2 * (1 - k * .72);
-    m.tail[i].position.set(x, y, z); m.tail[i].scale.set(rr * 1.2, rr, rr); lx = x; ly = y; lz = z;
+    m.tail[i].position.set(x + tl / n * .9, y, z); m.tail[i].scale.set(tl / n * .52, rr, rr); lx = x; ly = y; lz = z;
   }
-  m.tip.position.set(lx - s * .3, ly, lz);
+  m.tip.position.set(lx - tl / n * .3, ly, lz);
   const ty = e.type === 'crawler' ? s * .5 : s * .85, spacing = e.type === 'crawler' ? s * .35 : s * .55;
   for (const L of m.legs) {
-    if (L.j < 0) { // Broodmother's small forearms
+    if (L.j < 0) { // forearms
       seg(L.a, s * 1.0, s * 1.0, L.side * s * .35, s * 1.6, s * .7, L.side * s * .7, s * .08);
       seg(L.b, s * 1.6, s * .7, L.side * s * .7, s * 2.1, s * .9 + Math.sin(t * 2 + L.side) * s * .1, L.side * s * .4, s * .06); continue;
     }
@@ -1239,4 +1327,4 @@ $('btnStart').disabled = false; $('btnStart').textContent = 'Deploy';
 requestAnimationFrame(frame);
 
 // Dev-only handle for automated playtests (stripped from production builds).
-if (import.meta.env.DEV) Object.assign(window, { __S: () => S, __post: post, __api: { renderer, scene, MODELS, placeModel, buildStruct, H, DOMES, RIGS, BASE, BENCH, loot, craftItem, startNight, hurtEnemy, spawn, placeStruct, camera, SFX } });
+if (import.meta.env.DEV) Object.assign(window, { __S: () => S, __post: post, __api: { renderer, scene, MODELS, placeModel, buildStruct, togglePause, H, DOMES, RIGS, BASE, BENCH, loot, craftItem, startNight, hurtEnemy, spawn, placeStruct, camera, SFX } });

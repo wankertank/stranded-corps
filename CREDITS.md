@@ -13,6 +13,7 @@ Textures, 1k JPG, recompressed. Color, OpenGL normal and ARM (AO, roughness, met
 | Rock | `public/textures/rock` | [Dark Rock 02](https://polyhaven.com/a/dark_rock_02) |
 | Hull and structure metal | `public/textures/metal` | [Metal Plate 02](https://polyhaven.com/a/metal_plate_02) |
 | Concrete | `public/textures/concrete` | [Concrete Floor Worn 001](https://polyhaven.com/a/concrete_floor_worn_001) |
+| Dropship hull panels | `public/textures/hull` | [Blue Metal Plate](https://polyhaven.com/a/blue_metal_plate) |
 
 HDRI, 1k: [Kloofendal Overcast (Pure Sky)](https://polyhaven.com/a/kloofendal_overcast_puresky) in `public/hdri/overcast_1k.hdr`, used for image-based lighting.
 
