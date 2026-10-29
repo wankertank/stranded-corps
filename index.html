@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stranded Corps</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;700;800&family=Share+Tech+Mono&display=swap">
+</head>
+<body>
+
+<div id="wrap">
+  <canvas id="game" aria-label="Stranded Corps first-person view"></canvas>
+  <div id="flash"></div>
+  <div id="cross"></div>
+  <div id="compassBox"><canvas id="compass" width="720" height="56"></canvas><div id="locLbl"></div></div>
+
+  <div class="hud" id="tl">
+    <div class="row"><span class="big" id="dayLbl">DAY 1</span><span class="lbl" id="clockLbl">Night in 1:30</span></div>
+    <div class="bar" id="clockBar"><i></i></div>
+    <div class="row"><span class="lbl">Health</span><span id="hpTxt">100/100</span></div>
+    <div class="bar" id="hpBar"><i></i></div>
+    <div class="row"><span class="lbl">Noise</span><span class="lbl" id="noiseTxt">quiet</span></div>
+    <div class="bar" id="noiseBar"><i></i></div>
+  </div>
+
+  <div class="hud" id="tr">
+    <div class="res"><span class="lbl">Scrap</span><b id="r_scrap">0</b></div>
+    <div class="res"><span class="lbl">Metal</span><b id="r_metal">0</b></div>
+    <div class="res"><span class="lbl">Cells</span><b id="r_cells">0</b></div>
+    <div class="res"><span class="lbl">Chips</span><b id="r_chips">0</b></div>
+    <div class="res"><span class="lbl">Cores</span><b id="r_cores">0</b></div>
+  </div>
+
+  <div class="hud" id="bl">
+    <div class="row"><span class="lbl" id="modeLbl">Weapon</span><span class="lbl" id="tierLbl">Tier 1 · Survivor</span></div>
+    <div class="big" id="weapLbl">M9 SIDEARM</div>
+    <div class="row"><span id="ammoTxt">Ammo ∞</span><span id="medTxt">Medkits 0</span></div>
+  </div>
+
+  <div class="hud" id="radarBox" hidden><canvas id="radar" width="300" height="300"></canvas></div>
+  <div id="log"></div>
+  <div id="hint"></div>
+
+  <div id="craft" hidden>
+    <div class="sheet" role="dialog" aria-label="Workbench">
+      <div class="row"><h2>Workbench</h2><span class="lbl">C or Esc to close</span></div>
+      <div id="craftNote"></div>
+      <h3>Research</h3><div class="grid" id="g_research"></div>
+      <h3>Gear</h3><div class="grid" id="g_items"></div>
+      <h3>Structures <span class="tierTag">(place with B, then 1 to 4)</span></h3><div class="grid" id="g_builds"></div>
+    </div>
+  </div>
+
+  <div class="ov" id="ovStart">
+    <div class="inner">
+      <div class="eyebrow">Frontier Expeditionary Corps · Veyra-9 · Field build</div>
+      <h1>Stranded Corps</h1>
+      <p>Your dropship went down covering the Haldane Colony evacuation. The fleet jumped without you. The Skarn hive far to the northeast heard the crash, and when night falls they will come for the noise and the light.</p>
+      <p>Salvage is thin. Range out to the colony domes and mining rigs, get back to the workbench before dark, and tech up. On night 7 the Broodmother leaves her nest. Kill her to win.</p>
+      <div class="keys">
+        <span><kbd>WASD</kbd>Move</span><span><kbd>Shift</kbd>Sprint (loud)</span>
+        <span><kbd>Mouse</kbd>Look and fire</span><span><kbd>E</kbd>Search crates</span>
+        <span><kbd>C</kbd>Workbench</span><span><kbd>B</kbd>Build mode</span>
+        <span><kbd>1-4</kbd>Pick structure</span><span><kbd>R-click</kbd>Remove structure</span>
+        <span><kbd>Q</kbd>Switch weapon</span><span><kbd>H</kbd>Use medkit</span>
+        <span><kbd>F</kbd>Flashlight</span><span><kbd>M</kbd>Mute sound</span><span><kbd>Esc</kbd>Pause</span>
+      </div>
+      <button class="btn" id="btnStart" disabled>Loading</button>
+      <p class="lbl" id="loadErr"></p>
+      <p class="lbl">Desktop with keyboard and mouse. Click Deploy to lock the mouse. Days are 90 seconds, nights 70.</p>
+    </div>
+  </div>
+
+  <div class="ov" id="ovEnd" hidden>
+    <div class="inner">
+      <div class="eyebrow" id="endEyebrow">Signal lost</div>
+      <h1 id="endTitle">KIA</h1>
+      <p id="endText"></p>
+      <div class="stat" id="endStats"></div>
+      <button class="btn" id="btnAgain">Redeploy</button>
+    </div>
+  </div>
+
+  <div class="ov" id="ovPause" hidden>
+    <div class="inner"><div class="eyebrow">Paused</div><h1>Holding</h1><p>Resume to lock the mouse again.</p><button class="btn" id="btnResume">Resume</button></div>
+  </div>
+</div>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
