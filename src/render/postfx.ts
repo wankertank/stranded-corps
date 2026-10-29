@@ -16,7 +16,7 @@ const LensShader = {
     time: { value: 0 },
     grain: { value: 0.05 },
     vignette: { value: 0.32 },
-    fringe: { value: 0.0006 },
+    fringe: { value: 0.0002 },
     hurt: { value: 0 },
   },
   vertexShader: /* glsl */ `
@@ -65,7 +65,7 @@ export function createPostFX(renderer: THREE.WebGLRenderer, scene: THREE.Scene, 
   ao.updateGtaoMaterial({ radius: 0.9, distanceExponent: 1.4, thickness: 1.2, scale: 1.1, samples: 12 });
   ao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 12 });
   // Only bright HDR sources bloom: muzzle flash, lamps, floodlights, Skarn acid, the bench screen.
-  const bloom = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.4, 0.45, 1.0);
+  const bloom = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.3, 0.4, 1.0);
   const output = new OutputPass();
   const lens = new ShaderPass(LensShader);
 

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { createPostFX } from '../render/postfx';
 import { untonemap, usePerceptualFog, displaySpaceAlpha } from '../render/tonemap';
+import { loadPBR, loadEnvironment, triplanar, terrainMaterial } from '../render/materials';
 
 usePerceptualFog();
 
@@ -127,20 +128,15 @@ const muzzleLight = new THREE.PointLight(col('#ffd8a0'), 0, 16, 0); camera.add(m
 const fireLight = new THREE.PointLight(col('#ff8a3a'), 1.6 * PLUX, 24, 0); scene.add(fireLight);
 const floodLights = Array.from({ length: 4 }, () => { const l = new THREE.PointLight(col('#ffe2b0'), 0, 30, 0); scene.add(l); return l; });
 
+// CC0 PBR sets from Poly Haven (see CREDITS.md) and an overcast HDRI for image-based lighting.
+const [TX_GROUND, TX_SNOW, TX_ROCK, TX_METAL, TX_CONCRETE, ENV] = await Promise.all([
+  ...['ground', 'snow', 'rock', 'metal', 'concrete'].map(n => loadPBR(renderer, n)),
+  loadEnvironment(renderer, 'overcast_1k.hdr'),
+]);
+scene.environment = ENV;
+
 // ---------- textures ----------
 function canvasTex(w, h, fn, srgb = true) { const c = document.createElement('canvas'); c.width = w; c.height = h; fn(c.getContext('2d'), w, h); const t = new THREE.CanvasTexture(c); if (srgb) t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = renderer.capabilities.getMaxAnisotropy(); return t; }
-const groundTex = canvasTex(512, 512, (g, T) => {
-  const img = g.createImageData(T, T), nz = valueNoise(8, 5), nz2 = valueNoise(32, 9), r = mulberry(4);
-  for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
-    const h = fbm(nz, x / T * 8, y / T * 8, 5), dt = nz2(x / T * 32, y / T * 32);
-    let v = 70 + h * 80; const frost = clamp((h - .58) * 3.2, 0, 1) * .6; v += (200 - v) * frost;
-    const gr = (r() - .5) * 22 + (dt - .5) * 16, i = (y * T + x) * 4;
-    img.data[i] = v + gr; img.data[i + 1] = v + gr + 2; img.data[i + 2] = v + gr + 5; img.data[i + 3] = 255;
-  }
-  g.putImageData(img, 0, 0);
-  for (let i = 0; i < 900; i++) { const x = r() * T, y = r() * T, s = .8 + r() * 2.6, pv = 120 + r() * 90; g.fillStyle = 'rgba(0,0,0,.4)'; g.beginPath(); g.ellipse(x + s * .5, y + s * .6, s, s * .8, 0, 0, TAU); g.fill(); g.fillStyle = `rgb(${pv},${pv + 3},${pv + 6})`; g.beginPath(); g.ellipse(x, y, s, s * .8, 0, 0, TAU); g.fill(); }
-});
-groundTex.wrapS = groundTex.wrapT = THREE.RepeatWrapping; groundTex.repeat.set(WORLD / 3.5, WORLD / 3.5);
 const glowTex = canvasTex(64, 64, (g) => { const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32); gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(.3, 'rgba(255,255,255,.5)'); gr.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = gr; g.fillRect(0, 0, 64, 64); });
 const smokeTex = canvasTex(64, 64, (g) => { const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32); gr.addColorStop(0, 'rgba(255,255,255,.6)'); gr.addColorStop(.6, 'rgba(255,255,255,.25)'); gr.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = gr; g.fillRect(0, 0, 64, 64); });
 const planetTex = canvasTex(512, 256, (g, w, h) => { const r = mulberry(77); for (let y = 0; y < h; y++) { const v = Math.sin(y / h * 22 + Math.sin(y / 9) * .8) * .5 + .5; g.fillStyle = `rgb(${Math.round(120 + v * 70)},${Math.round(98 + v * 50)},${Math.round(80 + v * 30)})`; g.fillRect(0, y, w, 1); } for (let i = 0; i < 40; i++) { g.fillStyle = `rgba(255,240,220,${r() * .12})`; g.fillRect(0, r() * h, w, 1 + r() * 3); } g.fillStyle = 'rgba(150,70,50,.5)'; g.beginPath(); g.ellipse(300, 150, 40, 14, 0, 0, TAU); g.fill(); });
@@ -177,6 +173,14 @@ const CRATE_MAT = {
   rig: new THREE.MeshStandardMaterial({ color: col('#a68a2c'), roughness: .7 }), hive: new THREE.MeshStandardMaterial({ color: col('#3a4529'), roughness: .5 }),
   looted: new THREE.MeshStandardMaterial({ color: col('#1f201e'), roughness: .9 }),
 };
+// Texture the shared materials. Each keeps its tuned color as a tint over the scanned surface.
+triplanar(M.rock, TX_ROCK, { scale: .35, normalStrength: 1.4 });
+triplanar(M.burnt, TX_ROCK, { scale: .5 });
+for (const m of [M.metal, M.darkMetal, M.hull, M.deck]) triplanar(m, TX_METAL, { scale: .45, useMetal: .6 });
+for (const m of [M.gun, M.gunOlive]) triplanar(m, TX_METAL, { scale: 6, normalStrength: .5, useMetal: .4 });
+triplanar(M.concrete, TX_CONCRETE, { scale: .3 });
+triplanar(M.sand, TX_GROUND, { scale: .4 });
+for (const m of [CRATE_MAT.scrap, CRATE_MAT.dome, CRATE_MAT.rig, CRATE_MAT.looted]) triplanar(m, TX_METAL, { scale: 1.2, useMetal: .3 });
 function mesh(geo, mat, x, y, z, sx = 1, sy = 1, sz = 1, parent = scene, shadow = true) {
   const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.scale.set(sx, sy, sz); m.castShadow = shadow; m.receiveShadow = true; parent.add(m); return m;
 }
@@ -185,18 +189,18 @@ function mesh(geo, mat, x, y, z, sx = 1, sy = 1, sz = 1, parent = scene, shadow 
 let terrainMesh, stars, planet, snowPts, rocks = [], cratesStatic = [];
 function buildWorld() {
   const seg = 160, geo = new THREE.PlaneGeometry(WORLD, WORLD, seg, seg); geo.rotateX(-Math.PI / 2);
-  const pos = geo.attributes.position, cols = new Float32Array(pos.count * 3);
+  const pos = geo.attributes.position, cols = new Float32Array(pos.count * 3), snows = new Float32Array(pos.count);
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i) + WORLD / 2, z = pos.getZ(i) + WORLD / 2, h = H(x, z); pos.setY(i, h);
     const v = fbm(NZ3, x / 22, z / 22, 4), snowK = clamp((v - .55) * 4, 0, 1) * .8 + clamp((h - 3) / 8, 0, 1) * .5, dk = clamp((.45 - v) * 4, 0, 1) * .45;
     const nest = 1 - smooth(25, 80, Math.hypot(x - HIVE.x, z - HIVE.z));
     let c = lerp(.82, .4, dk); let r = c, g2 = c, b = c;
-    r = lerp(r, 1.18, snowK); g2 = lerp(g2, 1.22, snowK); b = lerp(b, 1.3, snowK);
+    snows[i] = clamp(snowK, 0, 1) * (1 - nest);
     r = lerp(r, .22, nest); g2 = lerp(g2, .3, nest); b = lerp(b, .25, nest);
     cols[i * 3] = r; cols[i * 3 + 1] = g2; cols[i * 3 + 2] = b;
   }
-  geo.setAttribute('color', new THREE.BufferAttribute(cols, 3)); geo.computeVertexNormals();
-  terrainMesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: groundTex, vertexColors: true, roughness: .96 }));
+  geo.setAttribute('color', new THREE.BufferAttribute(cols, 3)); geo.setAttribute('snow', new THREE.BufferAttribute(snows, 1)); geo.computeVertexNormals();
+  terrainMesh = new THREE.Mesh(geo, terrainMaterial(TX_GROUND, TX_SNOW, 1 / 3.5, .18));
   terrainMesh.position.set(WORLD / 2, 0, WORLD / 2); terrainMesh.receiveShadow = true; scene.add(terrainMesh);
 
   // rocks
@@ -1070,6 +1074,7 @@ function environment(dt) {
   hemi.intensity = (.12 + .62 * day) * LUX; hemi.color.set(col('#b9c6d2')).lerp(col('#2a3a5a'), dk);
   renderer.toneMappingExposure = lerp(1.05, .9, dk);
   // Fog and sky go through tone mapping in post, so feed in the color that maps back to the tuned one.
+  scene.environmentIntensity = lerp(.25, .03, dk);
   untonemap(_c, renderer.toneMappingExposure, scene.fog.color); scene.background.copy(scene.fog.color);
   flashlight.intensity = S.flashOn ? lerp(.6, 2.6, dk) * PLUX * .7 : 0;
   muzzleLight.intensity = S.muzzle > 0 ? 3 * PLUX : 0; muzzleLight.color.set(S.weapons[S.wi] === 'flamer' ? col('#ff8a32') : col('#ffd8a0'));
