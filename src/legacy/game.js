@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { createPostFX } from '../render/postfx';
 import { untonemap, usePerceptualFog, displaySpaceAlpha } from '../render/tonemap';
 import { loadPBR, loadEnvironment, triplanar, terrainMaterial } from '../render/materials';
+import { loadModels, placeModel, setDarkened, setMaterial, tinted } from '../render/models';
 
 usePerceptualFog();
 
@@ -129,9 +130,10 @@ const fireLight = new THREE.PointLight(col('#ff8a3a'), 1.6 * PLUX, 24, 0); scene
 const floodLights = Array.from({ length: 4 }, () => { const l = new THREE.PointLight(col('#ffe2b0'), 0, 30, 0); scene.add(l); return l; });
 
 // CC0 PBR sets from Poly Haven (see CREDITS.md) and an overcast HDRI for image-based lighting.
-const [TX_GROUND, TX_SNOW, TX_ROCK, TX_METAL, TX_CONCRETE, ENV] = await Promise.all([
+const [TX_GROUND, TX_SNOW, TX_ROCK, TX_METAL, TX_CONCRETE, ENV, MODELS] = await Promise.all([
   ...['ground', 'snow', 'rock', 'metal', 'concrete'].map(n => loadPBR(renderer, n)),
   loadEnvironment(renderer, 'overcast_1k.hdr'),
+  loadModels(renderer),
 ]);
 scene.environment = ENV;
 
@@ -168,11 +170,7 @@ const M = {
   gunOlive: new THREE.MeshStandardMaterial({ color: col('#3e4a33'), roughness: .7, metalness: .2 }),
   glove: new THREE.MeshStandardMaterial({ color: col('#2b2f26'), roughness: .9 }),
 };
-const CRATE_MAT = {
-  scrap: new THREE.MeshStandardMaterial({ color: col('#7d5a37'), roughness: .85 }), dome: new THREE.MeshStandardMaterial({ color: col('#5b7480'), roughness: .7, metalness: .2 }),
-  rig: new THREE.MeshStandardMaterial({ color: col('#a68a2c'), roughness: .7 }), hive: new THREE.MeshStandardMaterial({ color: col('#3a4529'), roughness: .5 }),
-  looted: new THREE.MeshStandardMaterial({ color: col('#1f201e'), roughness: .9 }),
-};
+const CRATE_MAT = { hive: new THREE.MeshStandardMaterial({ color: col('#3a4529'), roughness: .5 }) };
 // Texture the shared materials. Each keeps its tuned color as a tint over the scanned surface.
 triplanar(M.rock, TX_ROCK, { scale: .35, normalStrength: 1.4 });
 triplanar(M.burnt, TX_ROCK, { scale: .5 });
@@ -180,7 +178,10 @@ for (const m of [M.metal, M.darkMetal, M.hull, M.deck]) triplanar(m, TX_METAL, {
 for (const m of [M.gun, M.gunOlive]) triplanar(m, TX_METAL, { scale: 6, normalStrength: .5, useMetal: .4 });
 triplanar(M.concrete, TX_CONCRETE, { scale: .3 });
 triplanar(M.sand, TX_GROUND, { scale: .4 });
-for (const m of [CRATE_MAT.scrap, CRATE_MAT.dome, CRATE_MAT.rig, CRATE_MAT.looted]) triplanar(m, TX_METAL, { scale: 1.2, useMetal: .3 });
+// a placed CC0 model, sitting on its footprint at (x, y, z)
+function prop(name, x, y, z, opts = {}, parent = scene, ry = 0) {
+  const g = placeModel(typeof name === 'string' ? MODELS[name] : name, opts); g.position.set(x, y, z); g.rotation.y = ry; parent.add(g); return g;
+}
 function mesh(geo, mat, x, y, z, sx = 1, sy = 1, sz = 1, parent = scene, shadow = true) {
   const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.scale.set(sx, sy, sz); m.castShadow = shadow; m.receiveShadow = true; parent.add(m); return m;
 }
@@ -204,15 +205,16 @@ function buildWorld() {
   terrainMesh.position.set(WORLD / 2, 0, WORLD / 2); terrainMesh.receiveShadow = true; scene.add(terrainMesh);
 
   // rocks
-  const r = mulberry(7), rockGeos = [];
-  for (let v = 0; v < 10; v++) { const g = new THREE.IcosahedronGeometry(1, 1), p = g.attributes.position, rr = mulberry(200 + v); for (let i = 0; i < p.count; i++) { const k = .75 + rr() * .45; p.setXYZ(i, p.getX(i) * k, p.getY(i) * k * .8, p.getZ(i) * k); } g.computeVertexNormals(); rockGeos.push(g); }
+  // photoscanned moon rocks, darkened from pale lunar grey to Veyra's basalt
+  const r = mulberry(7), ROCKS = [1, 2, 3, 4, 5, 6, 7].map(i => tinted(MODELS[`moon_rock_0${i}`], col('#55585b')));
   const near = (x, z, p, d) => Math.hypot(x - p.x, z - p.z) < d;
   for (let i = 0; i < 300; i++) {
     const x = 8 + r() * (WORLD - 16), z = 8 + r() * (WORLD - 16), rad = .8 + Math.pow(r(), 2) * 3.2;
     if (near(x, z, BASE, 18) || near(x, z, HIVE, 32) || DOMES.some(d => near(x, z, d, 13)) || RIGS.some(d => near(x, z, d, 11))) continue;
     const y = H(x, z);
-    const m = mesh(rockGeos[i % 10], M.rock, x, y + rad * .25, z, rad, rad * (.7 + r() * .5), rad * (.8 + r() * .4));
-    m.rotation.y = r() * TAU; rocks.push({ x, z, r: rad, y });
+    const a = ROCKS[i % 7], k = rad * 2.1 / Math.max(a.size.x, a.size.z), sy = .7 + r() * .5, sz = .8 + r() * .4;
+    const m = prop(a, x, y - rad * .2, z, {}, scene, r() * TAU); m.scale.set(k, rad * 1.5 * sy / a.size.y, k * sz);
+    rocks.push({ x, z, r: rad, y });
   }
   // colony domes
   DOMES.forEach((d, i) => buildDome(d, mulberry(300 + i)));
@@ -248,7 +250,9 @@ function buildDome(d, r) {
     ring.rotation.x = Math.PI / 2; ring.position.y = ry; ring.rotation.z = r() * TAU; ring.castShadow = true; g.add(ring);
   }
   for (let i = 0; i < 6; i++) { const a = r() * TAU, pl = mesh(BOX, M.glass, Math.cos(a) * 8.6, 1.5 + r() * 4, Math.sin(a) * 8.6, .05, 2.5, 2.5, g, false); pl.rotation.y = -a; }
-  for (let i = 0; i < 10; i++) { const a = r() * TAU, m2 = r() * 7; const b = mesh(BOX, chance(.5) ? M.darkMetal : M.concrete, Math.cos(a) * m2, .5, Math.sin(a) * m2, .6 + r() * 1.6, .3 + r() * 1.2, .6 + r() * 1.6, g); b.rotation.y = r() * TAU; }
+  // abandoned colony kit
+  const kit = ['portable_generator', 'metal_tool_chest', 'barrel_01', 'propane_tank', 'old_military_crate', 'metal_jerrycan', 'ammo_box', 'medical_box'];
+  for (let i = 0; i < 10; i++) { const a = r() * TAU, m2 = 1 + r() * 6.5; prop(kit[Math.floor(r() * kit.length)], Math.cos(a) * m2, .25, Math.sin(a) * m2, { scale: 1.1 }, g, r() * TAU); }
 }
 function buildRig(d, r) {
   const y = H(d.x, d.z), g = new THREE.Group(); g.position.set(d.x, y, d.z); scene.add(g);
@@ -260,6 +264,9 @@ function buildRig(d, r) {
   mesh(CYLS, M.darkMetal, tx, Ht + .4, tz, .7, .8, .7, g);
   for (let i = 0; i < 4; i++) { const p = mesh(CYLS, M.darkMetal, -3, .9, -4 + i * 1.6, .35, 7, .35, g); p.rotation.z = Math.PI / 2; }
   for (let i = 0; i < 14; i++) mesh(SPH_LO, M.rock, -2 + r() * 4, .7, 2 + r() * 3, .5 + r() * .6, .35 + r() * .3, .5 + r() * .6, g);
+  for (let i = 0; i < 5; i++) prop('barrel_01', 3 + (i % 3) * .65, .6, 3.2 + Math.floor(i / 3) * .65, { scale: 1.1 }, g, r() * TAU);
+  prop('propane_tank', 4.8, .6, 2.6, { scale: 1.2 }, g); prop('metal_jerrycan', 2.4, .6, 4.6, { scale: 1.1 }, g, r() * TAU);
+  prop('portable_generator', -4.5, .6, 4, { scale: 1.2 }, g, r() * TAU);
 }
 let crashSmokeAt = [];
 function buildCrash() {
@@ -277,6 +284,11 @@ function buildCrash() {
   for (let i = 0; i < 6; i++) mesh(BOX, M.burnt, -5 + i * 2, 1.2 + rand(-1, 1), 2.25, 1.2, 1, .05, body, false);
   const beacon = mesh(SPH_LO, M.red, 1, 3.4, 0, .18, .18, .18, body, false); beacon.userData.beacon = true; M.red.userData.mesh = beacon;
   for (let i = 0; i < 26; i++) { const a = rand(0, TAU), m2 = rand(7, 16); const b = mesh(BOX, chance(.5) ? M.hull : M.burnt, Math.cos(a) * m2, .2, Math.sin(a) * m2, rand(.3, 1.4), rand(.1, .5), rand(.3, 1)); b.rotation.y = rand(0, TAU); g.add(b); }
+  // what the marine dragged out of the wreck
+  for (const [name, px, pz, ry, sc] of [['old_military_crate', 2, 5.4, .2, 1], ['ammo_box', 3.4, 5.9, 1.1, 1.1], ['ammo_box', 3.6, 5.3, .4, 1.1], ['medical_box', 1.1, 6.3, -.5, 1],
+    ['metal_jerrycan', -1.5, 5.6, 2, 1.1], ['metal_jerrycan', -2, 5.9, 2.4, 1.1], ['propane_tank', -3.4, 5.2, 0, 1.1], ['barrel_01', 5.6, -4.8, 0, 1.1], ['barrel_01', 6.3, -4.4, 1, 1.1]]) {
+    prop(name, px, 0, pz, { scale: sc }, g, ry);
+  }
   g.updateMatrixWorld(true);
   const ep = new THREE.Vector3(-8.6, 1.4, 0).applyMatrix4(body.matrixWorld);
   fireLight.position.set(ep.x, ep.y + 1, ep.z);
@@ -299,6 +311,7 @@ function buildBench() {
   for (const [x, z] of [[-.9, -.38], [.9, -.38], [-.9, .38], [.9, .38]]) mesh(BOX, M.darkMetal, x, .4, z, .08, .8, .08, g);
   mesh(BOX, M.darkMetal, -.4, 1.1, -.1, .7, .4, .5, g); mesh(BOX, M.metal, .5, .98, .1, .5, .15, .3, g);
   mesh(SPH_LO, M.amber, -.6, 1.4, -.1, .06, .06, .06, g, false);
+  prop('metal_tool_chest', 1.55, 0, .1, {}, g, -.1); prop('portable_generator', -1.7, 0, .3, {}, g, .4); prop('metal_jerrycan', -1.3, 0, -.6, {}, g, 1.4);
   const l = new THREE.PointLight(col('#f0b13c'), .8 * PLUX, 6, 0); l.position.set(-.6, 1.6, 0); g.add(l);
 }
 
@@ -427,8 +440,8 @@ function buildStruct(type, ghost) {
   const add = (geo, mat, x, y, z, sx, sy, sz) => { const m = mesh(geo, gm || mat, x, y, z, sx, sy, sz, g, !ghost); if (ghost) m.receiveShadow = false; return m; };
   const out = { g, gm };
   if (type === 'barricade') {
-    for (let row = 0; row < 3; row++) for (let i = 0; i < 3; i++) add(SPH_LO, -.6 + i * .6 + (row % 2) * .3 - .15, .18 + row * .3, 0, .34, .17, .28, M.sand);
-    const pl = add(BOX, M.wood, 0, .7, .32, 1.9, .5, .06, M.wood); pl.rotation.z = .12;
+    const b = prop('concrete_road_barrier', 0, 0, 0, { fit: 1.95 }, g); b.scale.y *= 1.15;
+    if (ghost) setMaterial(b, gm);
   } else if (type === 'wall') {
     add(BOX, M.metal, 0, 1.3, 0, 1.96, 2.6, .5);
     add(BOX, M.darkMetal, 0, 1.3, 0, 2.0, .18, .56); add(BOX, M.darkMetal, 0, 2.55, 0, 2.0, .12, .56);
@@ -454,8 +467,12 @@ function buildViewmodels() {
   const add = (parent, geo, mat, x, y, z, sx, sy, sz) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.scale.set(sx, sy, sz); parent.add(m); return m; };
   const mk = () => { const g = new THREE.Group(); vm.add(g); g.visible = false; return g; };
   let g = mk(); VMS.pistol = g;
-  add(g, BOX, M.gun, 0, 0, -.06, .05, .07, .24); add(g, BOX, M.gun, 0, -.08, .02, .045, .14, .06); add(g, BOX, M.glove, 0, -.12, .06, .08, .1, .12);
-  g.muzzle = new THREE.Vector3(0, .01, -.2);
+  // scanned service pistol, barrel along +x in the file; the slide is its own part so it can cycle
+  const pistol = placeModel(MODELS.service_pistol); pistol.rotation.y = Math.PI / 2; pistol.scale.setScalar(1.15); pistol.position.set(-.02, -.08, -.05); g.add(pistol);
+  pistol.traverse(o => { o.castShadow = false; o.receiveShadow = false; });
+  g.slide = pistol.getObjectByName('service_pistol_slide_a'); g.slideX = g.slide?.position.x ?? 0;
+  add(g, BOX, M.glove, 0, -.12, .06, .08, .1, .12);
+  g.muzzle = new THREE.Vector3(0, .01, -.16);
   g = mk(); VMS.pulse = g;
   add(g, BOX, M.gunOlive, 0, 0, -.1, .08, .1, .5); add(g, BOX, M.gun, 0, .01, -.42, .03, .03, .18); add(g, BOX, M.gun, 0, -.09, -.12, .05, .12, .07);
   add(g, BOX, M.gun, 0, .07, -.05, .04, .04, .22); add(g, BOX, M.amber, .042, .02, -.02, .005, .02, .05); add(g, BOX, M.glove, -.02, -.1, .08, .08, .1, .12); add(g, BOX, M.glove, 0, -.06, -.28, .08, .07, .1);
@@ -582,12 +599,14 @@ function clearDynamic() {
   if (S.ghost) scene.remove(S.ghost.g);
 }
 const crateGeo = new THREE.BoxGeometry(.9, .6, .62);
+// loot containers: scrap crates in the open, cabinets in the domes, barrels on the rigs, resin-crusted boxes at the hive
+const CRATE_MODEL = { scrap: ['wooden_military_crate', { fit: 1.1 }], dome: ['utility_box_01', { scale: 1.1 }], rig: ['barrel_01', { scale: 1.15 }] };
 function newGame() {
   clearDynamic();
   const r = mulberry(17), crates = [];
   const near = (x, z, p, d) => Math.hypot(x - p.x, z - p.z) < d;
   const free = (x, z) => !rocks.some(k => Math.hypot(x - k.x, z - k.z) < k.r + 1);
-  const addCrate = (x, z, kind) => { if (!free(x, z)) return; const y = H(x, z); const m = mesh(crateGeo, CRATE_MAT[kind], x, y + .3, z); m.rotation.y = r() * TAU; crates.push({ x, z, kind, looted: false, m }); };
+  const addCrate = (x, z, kind) => { if (!free(x, z)) return; const y = H(x, z); const cm = CRATE_MODEL[kind], ry = r() * TAU, m = cm ? prop(cm[0], x, y - .03, z, cm[1], scene, ry) : mesh(crateGeo, CRATE_MAT[kind], x, y + .3, z); m.rotation.y = ry; crates.push({ x, z, kind, looted: false, m }); };
   for (let i = 0; i < 170; i++) { const x = 6 + r() * (WORLD - 12), z = 6 + r() * (WORLD - 12); if (!near(x, z, BASE, 11) && !near(x, z, HIVE, 30)) addCrate(x, z, 'scrap'); }
   for (let i = 0; i < 4; i++) { const a = r() * TAU; addCrate(BASE.x + Math.cos(a) * rand(6, 10), BASE.z + Math.sin(a) * rand(6, 10), 'scrap'); }
   DOMES.forEach(d => { for (let i = 0; i < 5; i++) { const a = r() * TAU, m2 = r() * 6.5; addCrate(d.x + Math.cos(a) * m2, d.z + Math.sin(a) * m2, 'dome'); } });
@@ -702,7 +721,7 @@ function nearestCrate() {
 }
 function loot() {
   const c = nearestCrate(); if (!c) return;
-  c.looted = true; c.m.material = CRATE_MAT.looted; c.m.scale.y = .5; c.m.position.y -= .15;
+  c.looted = true; setDarkened(c.m, true);
   const g = {}; const add = (k, n) => { if (n > 0) g[k] = (g[k] || 0) + n; };
   if (c.kind === 'scrap') { add('scrap', rint(1, 3)); if (chance(.3)) add('metal', 1); }
   if (c.kind === 'dome') { add('scrap', rint(0, 2)); add('metal', rint(1, 2)); if (chance(.7)) add('cells', 1); }
@@ -818,7 +837,7 @@ function startDay() {
   S.day++; S.phase = 'day'; S.phaseT = 0; S.raidT = rand(20, 35);
   for (const e of S.enemies) if (!e.home && e.type !== 'brood' && !e.dying) e.state = 'flee';
   let refilled = 0;
-  for (const c of S.crates) if (c.looted && chance(.2)) { c.looted = false; c.m.material = CRATE_MAT[c.kind]; c.m.scale.y = 1; c.m.position.y += .15; refilled++; }
+  for (const c of S.crates) if (c.looted && chance(.2)) { c.looted = false; setDarkened(c.m, false); refilled++; }
   SFX.dawn();
   msg(`Dawn, day ${S.day}. The Skarn pull back. The storm uncovered ${refilled} crates.`, 'good');
   if (S.day === 6) msg('Tracker picks up deep tremors from the nest. One more night.', 'warn');
@@ -1105,6 +1124,7 @@ function updateCamera(dt) {
   for (const k in VMS) VMS[k].visible = k === wid && !S.buildMode;
   vm.position.set(.24 + Math.sin(p.bob * .5) * bobA * .3, -.24 - Math.abs(Math.sin(p.bob)) * bobA * .3, -.42 + S.recoil * .06);
   vm.rotation.x = S.recoil * .12;
+  if (VMS.pistol.slide) VMS.pistol.slide.position.x = VMS.pistol.slideX - Math.min(1, S.recoil * 2.5) * .022;
   if (S.muzzle > 0 && wid !== 'flamer') { _mz.copy(VMS[wid].muzzle); muzzleLight.position.copy(_mz).add(vm.position); }
   // build ghost
   if (S.buildMode) {
@@ -1219,4 +1239,4 @@ $('btnStart').disabled = false; $('btnStart').textContent = 'Deploy';
 requestAnimationFrame(frame);
 
 // Dev-only handle for automated playtests (stripped from production builds).
-if (import.meta.env.DEV) Object.assign(window, { __S: () => S, __post: post, __api: { renderer, scene, craftItem, startNight, hurtEnemy, spawn, placeStruct, camera, SFX } });
+if (import.meta.env.DEV) Object.assign(window, { __S: () => S, __post: post, __api: { renderer, scene, MODELS, placeModel, buildStruct, H, DOMES, RIGS, BASE, BENCH, loot, craftItem, startNight, hurtEnemy, spawn, placeStruct, camera, SFX } });
