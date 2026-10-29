@@ -29,7 +29,7 @@ Press G in game to switch between high and low graphics (low drops ambient occlu
 1. Project setup and port. Done.
 2. Renderer upgrade: Poly Haven CC0 PBR textures, HDRI lighting, bloom, ambient occlusion, film grain. Done.
 3. CC0 props: Poly Haven scanned rocks, loot containers, colony kit, concrete barricades and the service pistol. Done. The pulse rifle, smart gun and flamer stay procedural until a fitting free sci-fi model turns up.
-4. Skarn creature models: AI-generated bases, cleaned up and rigged, with animation.
+4. Skarn creature models and the crashed dropship, sculpted in code (`src/render/skarn.ts`, `src/render/shapes.ts`): glossy ribbed hide, swept-back craniums, jaws, dorsal tubes, forearms, bladed tails; a lofted dropship hull with engine pods, ramp and hull breach. Done. AI-generated Skarn can still replace these later.
 5. Feel: recorded audio, hit reactions, weapon animation, camera effects.
 
 Art stays free: CC0 packs and AI-generated models only. Credit each pack in `CREDITS.md` as it is added.
