@@ -62,7 +62,8 @@ const TRI_PARS = /* glsl */ `
     tx = vec3(tx.xy + n.zy, abs(tx.z) * n.x);
     ty = vec3(ty.xy + n.xz, abs(ty.z) * n.y);
     tz = vec3(tz.xy + n.xy, abs(tz.z) * n.z);
-    return normalize(tx.zyx * w.x + ty.xzy * w.y + tz.xyz * w.z);
+    vec3 r = tx.zyx * w.x + ty.xzy * w.y + tz.xyz * w.z;
+    return dot(r, r) > 1e-8 ? normalize(r) : n;
   }
 `;
 
@@ -104,7 +105,8 @@ export function triplanar<T extends THREE.MeshStandardMaterial>(material: T, set
         vec3 triP = vTriPos * triScale;
         vec4 triArmS = triSample(triArm, triP, triW);
         diffuseColor.rgb *= triSample(triMap, triP, triW).rgb / triMean * mix(1.0, triArmS.r, triAo);`)
-      .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = roughness * triArmS.g;')
+      // floor roughness: a near-mirror texel under the close muzzle light overflows half-float specular
+      .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = max(roughness * triArmS.g, 0.18);')
       .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = metalness * mix(1.0, triArmS.b, triUseMetal);')
       .replace('#include <normal_fragment_maps>', `
         vec3 triWN = transformNormalByInverseViewMatrix(normal, viewMatrix);
