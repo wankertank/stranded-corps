@@ -19,11 +19,11 @@ Desktop browser with keyboard and mouse. Click Deploy to lock the mouse. Space j
 - `index.html` holds the HUD and menu markup, `src/style.css` the HUD styles.
 - `src/main.ts` is the entry point.
 - `src/world/` holds the map: `terrain.ts` (the 1.16 km heightfield, the mountain ring and the points of interest list) and `spatial.ts` (bucket grid for collision queries). `src/legacy/pois.js` builds each point of interest.
-- `src/render/` holds the typed rendering modules: `postfx.ts` (ambient occlusion, bloom, lens pass), `materials.ts` (texture loading, triplanar PBR, terrain blend, HDRI lighting), `tonemap.ts` (keeps fog, sky and decals looking as tuned under post-processing).
+- `src/render/` holds the typed rendering modules: `postfx.ts` (the effects chain on [pmndrs/postprocessing](https://github.com/pmndrs/postprocessing): N8AO ambient occlusion, mipmap bloom, ACES tone mapping, SMAA, helmet lens), `materials.ts` (texture loading, triplanar PBR, terrain blend, HDRI lighting), `tonemap.ts` (keeps fog, sky and decals looking as tuned under post-processing).
 - `src/legacy/game.js` is the first-person prototype, ported as one ES module on the current Three.js. It gets split into typed modules as each system is rebuilt.
 - `public/textures`, `public/hdri` and `public/models` hold CC0 art; see `CREDITS.md`. Models are packed with `gltf-transform optimize --compress meshopt --texture-compress webp`.
 
-Press G in game to switch between high and low graphics (low drops ambient occlusion and renders at 1x pixel ratio). `?q=low` in the URL starts in low.
+Press G in game to switch between high and low graphics (low drops ambient occlusion, halves the bloom resolution, uses cheaper SMAA and renders at 1x pixel ratio). `?q=low` in the URL starts in low.
 
 ## Roadmap
 

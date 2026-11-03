@@ -1,65 +1,68 @@
 import * as THREE from 'three';
-import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import {
+  EffectComposer, RenderPass, EffectPass, Effect, EffectAttribute, BlendFunction,
+  BloomEffect, ToneMappingEffect, ToneMappingMode, SMAAEffect, SMAAPreset,
+} from 'postprocessing';
+import { N8AOPostPass } from 'n8ao';
 
 export type Quality = 'high' | 'low';
 
-// Helmet-camera look, applied after tone mapping: film grain, vignette, slight lens fringing
-// toward the edges, and a red edge pulse when the player is hurt.
-// Drops NaN and Inf pixels and caps extreme HDR values before bloom. Bloom blurs across mip
-// levels, so a single bad pixel (say from specular overflow under the muzzle flash) would
-// otherwise spread into a black square around objects.
-const SanitizeShader = {
-  uniforms: { tDiffuse: { value: null } },
-  vertexShader: /* glsl */ `
-    varying vec2 vUv;
-    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-  fragmentShader: /* glsl */ `
-    uniform sampler2D tDiffuse;
-    varying vec2 vUv;
-    void main() {
-      vec4 c = texture2D(tDiffuse, vUv);
-      // NaN fails every comparison, so this also catches it; huge values cover Inf
-      bool ok = c.r == c.r && c.g == c.g && c.b == c.b && max(max(c.r, c.g), c.b) < 6.0e4;
-      gl_FragColor = vec4(ok ? min(c.rgb, vec3(48.0)) : vec3(0.0), 1.0);
-    }`,
-};
+// Post-processing runs on pmndrs/postprocessing: effects that share a pass are compiled into one
+// shader, so the chain costs far fewer full-screen draws than three's stock composer.
+//   scene -> N8AO ambient occlusion (high only) -> sanitize -> bloom + ACES tone mapping -> SMAA -> helmet lens
+// Hardware MSAA does not mix with screen-space AO, so edges are smoothed with SMAA instead.
 
-const LensShader = {
-  uniforms: {
-    tDiffuse: { value: null },
-    time: { value: 0 },
-    grain: { value: 0.05 },
-    vignette: { value: 0.32 },
-    fringe: { value: 0.0002 },
-    hurt: { value: 0 },
-  },
-  vertexShader: /* glsl */ `
-    varying vec2 vUv;
-    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-  fragmentShader: /* glsl */ `
-    uniform sampler2D tDiffuse;
-    uniform float time, grain, vignette, fringe, hurt;
-    varying vec2 vUv;
-    float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-    void main() {
-      vec2 c = vUv - 0.5;
-      float r2 = dot(c, c);
-      vec2 off = c * r2 * fringe * 40.0;
-      vec3 col = vec3(texture2D(tDiffuse, vUv + off).r, texture2D(tDiffuse, vUv).g, texture2D(tDiffuse, vUv - off).b);
-      col *= 1.0 - vignette * smoothstep(0.08, 0.55, r2);
-      col = mix(col, vec3(0.55, 0.03, 0.02), hurt * smoothstep(0.12, 0.5, r2));
-      float n = hash(vUv * vec2(1920.0, 1080.0) + fract(time) * 91.7) - 0.5;
-      // grain shows most in the mids, like film, not in pure black or white
-      float lum = dot(col, vec3(0.299, 0.587, 0.114));
-      col += n * grain * (0.35 + lum * (1.0 - lum) * 2.6);
-      gl_FragColor = vec4(col, 1.0);
-    }`,
-};
+/**
+ * Drops NaN and Inf pixels and caps extreme HDR values before bloom. Bloom blurs across mip
+ * levels, so a single bad pixel (say from specular overflow under the muzzle flash) would
+ * otherwise spread into a black square around objects.
+ */
+class SanitizeEffect extends Effect {
+  constructor() {
+    super('Sanitize', /* glsl */ `
+      void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
+        vec3 c = inputColor.rgb;
+        // NaN fails every comparison, so this also catches it; huge values cover Inf
+        bool ok = c.r == c.r && c.g == c.g && c.b == c.b && max(max(c.r, c.g), c.b) < 6.0e4;
+        outputColor = vec4(ok ? min(c, vec3(48.0)) : vec3(0.0), 1.0);
+      }`, { blendFunction: BlendFunction.SET });
+  }
+}
+
+/**
+ * Helmet-camera look, applied last: slight lens fringing toward the edges, vignette, a red edge
+ * pulse when hurt, and film grain. Works in display (sRGB) space, where it was tuned, and hands
+ * back linear for the final output encode.
+ */
+class LensEffect extends Effect {
+  constructor() {
+    super('Lens', /* glsl */ `
+      uniform float grain, vignette, fringe, hurt, seed;
+      float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+      vec3 toDisplay(vec3 c) { return pow(max(c, 0.0), vec3(1.0 / 2.2)); }
+      void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
+        vec2 c = uv - 0.5;
+        float r2 = dot(c, c);
+        vec2 off = c * r2 * fringe * 40.0;
+        vec3 col = toDisplay(vec3(texture2D(inputBuffer, uv + off).r, inputColor.g, texture2D(inputBuffer, uv - off).b));
+        col *= 1.0 - vignette * smoothstep(0.08, 0.55, r2);
+        col = mix(col, vec3(0.55, 0.03, 0.02), hurt * smoothstep(0.12, 0.5, r2));
+        float n = hash(uv * vec2(1920.0, 1080.0) + seed * 91.7) - 0.5;
+        // grain shows most in the mids, like film, not in pure black or white
+        float lum = dot(col, vec3(0.299, 0.587, 0.114));
+        col += n * grain * (0.35 + lum * (1.0 - lum) * 2.6);
+        outputColor = vec4(pow(max(col, 0.0), vec3(2.2)), 1.0);
+      }`, {
+      attributes: EffectAttribute.CONVOLUTION,
+      blendFunction: BlendFunction.SET,
+      uniforms: new Map<string, THREE.Uniform>([
+        ['grain', new THREE.Uniform(0.03)], ['vignette', new THREE.Uniform(0.25)], ['fringe', new THREE.Uniform(0.0002)],
+        ['hurt', new THREE.Uniform(0)], ['seed', new THREE.Uniform(0)],
+      ]),
+    });
+  }
+  u(name: string) { return this.uniforms.get(name)!; }
+}
 
 export interface PostFX {
   render(dt: number): void;
@@ -69,69 +72,60 @@ export interface PostFX {
   /** 0 day to 1 night: night gets more grain and a stronger vignette, like a low-light sensor. */
   setDarkness(dk: number): void;
   setHurt(k: number): void;
-  /** Individual passes, exposed for tuning and tests. */
-  readonly passes: { ao: GTAOPass; bloom: UnrealBloomPass; lens: ShaderPass };
+  /** Individual effects, exposed for tuning and tests. */
+  readonly passes: { ao: N8AOPostPass; bloom: BloomEffect; smaa: SMAAEffect; lens: LensEffect; composer: EffectComposer };
 }
 
 export function createPostFX(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.PerspectiveCamera, quality: Quality): PostFX {
   const size = renderer.getDrawingBufferSize(new THREE.Vector2());
-  const target = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples: 4 });
-  const composer = new EffectComposer(renderer, target);
+  const composer = new EffectComposer(renderer, { frameBufferType: THREE.HalfFloatType, depthBuffer: true, multisampling: 0 });
 
-  const renderPass = new RenderPass(scene, camera);
-  const ao = new GTAOPass(scene, camera, size.x, size.y);
-  ao.blendIntensity = 0.85;
-  ao.updateGtaoMaterial({ radius: 0.9, distanceExponent: 1.4, thickness: 1.2, scale: 1.1, samples: 12 });
-  ao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 12 });
-  // GTAO draws the scene into its own depth and normal buffers, and by default only skips points and
-  // lines. Sprites (muzzle flash, smoke) and see-through surfaces (glass, decals) would land there
-  // as solid quads and get shaded as dark boxes, so leave them out too.
-  const hideFromAO = (o: THREE.Object3D) => {
-    const m = (o as THREE.Mesh).material as THREE.Material | undefined;
-    return (o as THREE.Points).isPoints || (o as THREE.Line).isLine || (o as THREE.Sprite).isSprite || (!!m && !Array.isArray(m) && m.transparent && !m.depthWrite);
-  };
-  const aoInternals = ao as unknown as { _overrideVisibility(): void; _visibilityCache: THREE.Object3D[] };
-  aoInternals._overrideVisibility = () => {
-    scene.traverse((o) => { if (o.visible && hideFromAO(o)) { o.visible = false; aoInternals._visibilityCache.push(o); } });
-  };
-  // Only bright HDR sources bloom: muzzle flash, lamps, floodlights, Skarn acid, the bench screen.
-  const sanitize = new ShaderPass(SanitizeShader);
-  const bloom = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.3, 0.4, 1.0);
-  const output = new OutputPass();
-  const lens = new ShaderPass(LensShader);
+  const ao = new N8AOPostPass(scene, camera, size.x, size.y);
+  // metres-scale scene: contact shadows under props, in doorways and between rocks, not a dirty halo
+  Object.assign(ao.configuration, { aoRadius: 1.6, distanceFalloff: 0.6, intensity: 2.2, aoSamples: 16, denoiseSamples: 8, denoiseRadius: 10, halfRes: false, gammaCorrection: false });
 
-  composer.addPass(renderPass);
+  // Only bright HDR sources bloom: muzzle flash, lamps, floodlights, Skarn acid, the bench screen, the lab tanks.
+  const bloom = new BloomEffect({ mipmapBlur: true, luminanceThreshold: 1.0, luminanceSmoothing: 0.25, intensity: 0.9, radius: 0.62, levels: 7 });
+  // ACES, matching the renderer setting the fog and sky colors were tuned against (see tonemap.ts);
+  // the shader reads renderer.toneMappingExposure, so the day/night exposure ramp still applies.
+  const tone = new ToneMappingEffect({ mode: ToneMappingMode.ACES_FILMIC });
+  const smaa = new SMAAEffect({ preset: SMAAPreset.HIGH });
+  const lens = new LensEffect();
+
+  composer.addPass(new RenderPass(scene, camera));
   composer.addPass(ao);
-  composer.addPass(sanitize);
-  composer.addPass(bloom);
-  composer.addPass(output);
-  composer.addPass(lens);
+  composer.addPass(new EffectPass(camera, new SanitizeEffect()));
+  composer.addPass(new EffectPass(camera, bloom, tone));
+  composer.addPass(new EffectPass(camera, smaa));
+  composer.addPass(new EffectPass(camera, lens));
 
   let q = quality, time = 0, dk = 0;
   const apply = () => {
-    ao.enabled = q === 'high';
-    bloom.resolution.set(size.x / (q === 'high' ? 1 : 2), size.y / (q === 'high' ? 1 : 2));
+    const high = q === 'high';
+    ao.enabled = high;
+    // low: half-resolution bloom chain and cheaper edge search
+    bloom.resolution.scale = high ? 0.5 : 0.25;
+    smaa.applyPreset(high ? SMAAPreset.HIGH : SMAAPreset.LOW);
   };
   apply();
 
   return {
     get quality() { return q; },
-    passes: { ao, bloom, lens },
+    passes: { ao, bloom, smaa, lens, composer },
     render(dt) {
       time += dt;
-      lens.uniforms.time.value = time;
-      lens.uniforms.grain.value = 0.03 + dk * 0.03;
-      lens.uniforms.vignette.value = 0.25 + dk * 0.15;
+      lens.u('seed').value = time % 1;
+      lens.u('grain').value = 0.03 + dk * 0.03;
+      lens.u('vignette').value = 0.25 + dk * 0.15;
       composer.render(dt);
     },
     setSize(w, h) {
-      composer.setPixelRatio(renderer.getPixelRatio());
-      composer.setSize(w, h);
+      composer.setSize(w, h, false);
       renderer.getDrawingBufferSize(size);
       apply();
     },
     setQuality(next) { q = next; apply(); },
     setDarkness(k) { dk = k; },
-    setHurt(k) { lens.uniforms.hurt.value = k; },
+    setHurt(k) { lens.u('hurt').value = k; },
   };
 }
