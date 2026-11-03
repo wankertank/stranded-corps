@@ -73,6 +73,13 @@ const TRI_VERTEX = /* glsl */ `
   vTriNrm = transformNormalByInverseViewMatrix(transformedNormal, viewMatrix);
 `;
 
+// Object space: position and normal before the model matrix (no instancing or skinning in viewmodels).
+const TRI_VERTEX_OBJECT = /* glsl */ `
+  #include <project_vertex>
+  vTriPos = transformed;
+  vTriNrm = objectNormal;
+`;
+
 export interface TriplanarOptions {
   /** Texture repeats per metre. */
   scale?: number;
@@ -81,11 +88,13 @@ export interface TriplanarOptions {
   useMetal?: number;
   /** How strongly the baked AO darkens the surface. */
   ao?: number;
+  /** Project in the mesh's own space instead of world space, so the texture rides along with a moving object (viewmodels). */
+  objectSpace?: boolean;
 }
 
 /** Turns a MeshStandardMaterial into a triplanar PBR material. Its color multiplies the texture as a tint. */
 export function triplanar<T extends THREE.MeshStandardMaterial>(material: T, set: PBRSet, opts: TriplanarOptions = {}): T {
-  const { scale = 0.5, normalStrength = 1, useMetal = 0, ao = 0.6 } = opts;
+  const { scale = 0.5, normalStrength = 1, useMetal = 0, ao = 0.6, objectSpace = false } = opts;
   material.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, {
       triMap: { value: set.color }, triNormalMap: { value: set.normal }, triArm: { value: set.arm }, triMean: { value: set.mean },
@@ -93,9 +102,10 @@ export function triplanar<T extends THREE.MeshStandardMaterial>(material: T, set
     });
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vTriPos;\nvarying vec3 vTriNrm;')
-      .replace('#include <project_vertex>', TRI_VERTEX);
+      .replace('#include <project_vertex>', objectSpace ? TRI_VERTEX_OBJECT : TRI_VERTEX);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>
+        ${objectSpace ? 'uniform mat3 normalMatrix;' : ''}
         uniform sampler2D triMap, triNormalMap, triArm;
         uniform float triScale, triNormalStrength, triUseMetal, triAo;
         uniform vec3 triMean;
@@ -108,11 +118,13 @@ export function triplanar<T extends THREE.MeshStandardMaterial>(material: T, set
       // floor roughness: a near-mirror texel under the close muzzle light overflows half-float specular
       .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = max(roughness * triArmS.g, 0.18);')
       .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = metalness * mix(1.0, triArmS.b, triUseMetal);')
-      .replace('#include <normal_fragment_maps>', `
+      .replace('#include <normal_fragment_maps>', objectSpace ? `
+        vec3 triWN = normalize(vTriNrm) * (gl_FrontFacing ? 1.0 : -1.0);
+        normal = normalize(normalMatrix * triNormal(triNormalMap, triP, triWeights(triWN), triWN, triNormalStrength));` : `
         vec3 triWN = transformNormalByInverseViewMatrix(normal, viewMatrix);
         normal = normalize((viewMatrix * vec4(triNormal(triNormalMap, triP, triWeights(triWN), triWN, triNormalStrength), 0.0)).xyz);`);
   };
-  material.customProgramCacheKey = () => `tri-${set.color.uuid}`;
+  material.customProgramCacheKey = () => `tri-${set.color.uuid}-${objectSpace ? 'o' : 'w'}`;
   material.needsUpdate = true;
   return material;
 }

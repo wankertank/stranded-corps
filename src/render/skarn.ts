@@ -9,7 +9,7 @@ import { loft, latheX, plate, type Section } from './shapes';
  */
 
 // Tileable value noise on a `period`-cell grid.
-function noise2(x: number, y: number, period: number, seed: number): number {
+export function noise2(x: number, y: number, period: number, seed: number): number {
   const h = (i: number, j: number) => {
     const n = Math.sin(((i % period + period) % period) * 127.1 + ((j % period + period) % period) * 311.7 + seed * 74.7) * 43758.5453;
     return n - Math.floor(n);
