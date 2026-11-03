@@ -554,8 +554,8 @@ const vm = new THREE.Group(); camera.add(vm); vm.position.set(.15, -.13, -.34); 
 const VMS = {};
 // first-person guns, gloved hands and sleeves are built in src/render/viewmodels.ts
 function buildViewmodels() {
-  const built = buildGunViewmodels(weaponMaterials(), placeModel(MODELS.service_pistol));
-  for (const [k, v] of Object.entries(built)) { const g = v.group; g.visible = false; g.muzzle = v.muzzle; g.vmAnim = v.anim; vm.add(g); VMS[k] = g; }
+  const built = buildGunViewmodels(weaponMaterials());
+  for (const [k, v] of Object.entries(built)) { const g = v.group; g.visible = false; g.muzzle = v.muzzle; g.vmAnim = v.anim; g.vmFlash = v.flash; vm.add(g); VMS[k] = g; }
 }
 // ---------- sound: everything is synthesized with Web Audio, so there are no files to load ----------
 const VOICE = { crawler: .7, drone: 1, spitter: 1.1, warrior: 1.6, warden: 1.9, brood: 3 };
@@ -1119,7 +1119,7 @@ function fire() {
   dir.x += rand(-w.spread, w.spread); dir.y += rand(-w.spread, w.spread); dir.z += rand(-w.spread, w.spread); dir.normalize();
   const hit = rayCast(o, dir, 140), end = o.clone().addScaledVector(dir, hit.t);
   tracer(_mz, end, wid === 'pistol' ? '#fff2c4' : '#bfeaff'); SFX.shot(wid);
-  fx('flash', _mz.x, _mz.y, _mz.z, { s: wid === 'pistol' ? .5 : .7 });
+  fx('flash', _mz.x, _mz.y, _mz.z, { s: wid === 'pistol' ? .6 : .9 }); g.vmFlash?.();
   if (hit.e) { SFX.hit(hit.e.x, hit.e.z); hurtEnemy(hit.e, w.dmg); for (let i = 0; i < 3; i++) fx('acid', end.x, end.y, end.z, { vx: rand(-2, 2), vy: rand(0, 3), vz: rand(-2, 2) }); }
   else if (hit.t < 140) { fx('spark', end.x, end.y, end.z, { vy: 2 }); fx('dust', end.x, end.y, end.z, { s: .5 }); }
   S.muzzle = .05; S.recoil = Math.min(1, S.recoil + .4); p.pitch = clamp(p.pitch + w.kick, -1.45, 1.45);
@@ -1266,7 +1266,7 @@ function environment(dt) {
   scene.environmentIntensity = lerp(.25, .03, dk);
   untonemap(_c, renderer.toneMappingExposure, scene.fog.color); scene.background.copy(scene.fog.color);
   flashlight.intensity = S.flashOn ? lerp(.6, 2.6, dk) * PLUX * .7 : 0;
-  muzzleLight.intensity = S.muzzle > 0 ? 3 * PLUX : 0; muzzleLight.color.set(S.weapons[S.wi] === 'flamer' ? col('#ff8a32') : col('#ffd8a0'));
+  muzzleLight.intensity = S.muzzle > 0 ? (S.weapons[S.wi] === 'flamer' ? 3 : 6) * PLUX : 0; muzzleLight.color.set(S.weapons[S.wi] === 'flamer' ? col('#ff8a32') : col('#ffd8a0'));
   S.muzzle = Math.max(0, S.muzzle - dt);
   fireLight.intensity = (1.4 + Math.sin(S.t * 13) * .3 + Math.sin(S.t * 7.3) * .3) * (.3 + dk) * PLUX;
   M.red.emissiveIntensity = (S.t % 1.2) < .2 ? 3 : 0;
@@ -1303,7 +1303,7 @@ function updateCamera(dt) {
     -.34 + S.recoil * .06 + tilt * .08);
   vm.rotation.set(S.recoil * .12 - vmSprint * .2 - dk * .9 + tilt * .25, .06 + vmSprint * .55 + tilt * .2, vmSprint * .3 + tilt * .35);
   g.vmAnim(R, dt, { count: S.mags[wid] ?? 0, capacity: WEAPONS[wid].mag, firing: S.muzzle > 0, recoil: S.recoil });
-  if (S.muzzle > 0 && wid !== 'flamer') { _mz.copy(VMS[wid].muzzle); muzzleLight.position.copy(_mz).add(vm.position); }
+  if (S.muzzle > 0 && wid !== 'flamer') { vm.updateMatrix(); muzzleLight.position.copy(VMS[wid].muzzle).applyMatrix4(vm.matrix); } // camera space, like the viewmodel
   // build ghost
   if (S.buildMode) {
     const b = BUILDS[S.buildSel];
@@ -1417,4 +1417,4 @@ $('btnStart').disabled = false; $('btnStart').textContent = 'Deploy';
 requestAnimationFrame(frame);
 
 // Dev-only handle for automated playtests (stripped from production builds).
-if (import.meta.env.DEV) Object.assign(window, { __S: () => S, __post: post, __api: { renderer, scene, MODELS, placeModel, buildStruct, togglePause, selectWeapon, startReload, fire, H, DOMES, RIGS, BASE, BENCH, loot, craftItem, startNight, hurtEnemy, spawn, placeStruct, camera, SFX } });
+if (import.meta.env.DEV) Object.assign(window, { __S: () => S, __post: post, __api: { renderer, scene, MODELS, VMS, placeModel, buildStruct, togglePause, selectWeapon, startReload, fire, H, DOMES, RIGS, BASE, BENCH, loot, craftItem, startNight, hurtEnemy, spawn, placeStruct, camera, SFX } });
