@@ -389,6 +389,8 @@ export interface Viewmodel {
   muzzle: THREE.Vector3;
   /** R is reload progress 0..1, or -1 when not reloading. */
   anim: (R: number, dt: number, info: AnimInfo) => void;
+  /** Called on each shot to fire the gun's muzzle flash. */
+  flash?: () => void;
 }
 
 /** Reload travel of a part: out over [a, b], away until c, back in over [c, d]. */
@@ -435,37 +437,130 @@ function gaugeDisplay() {
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 }
 
-export function buildViewmodels(m: WeaponMaterials, pistolScan: THREE.Group): Record<string, Viewmodel> {
-  return { pistol: pistol(m, pistolScan), pulse: pulseRifle(m), flamer: flamer(m), smart: smartGun(m) };
+export function buildViewmodels(m: WeaponMaterials): Record<string, Viewmodel> {
+  return { pistol: pistol(m), pulse: pulseRifle(m), flamer: flamer(m), smart: smartGun(m) };
 }
 
-// ----- service pistol: the scanned model, with two hands on it -----
-function pistol(m: WeaponMaterials, scan: THREE.Group): Viewmodel {
-  const g = new THREE.Group();
-  scan.rotation.y = Math.PI / 2; scan.scale.setScalar(1.15); scan.position.set(-.02, -.08, -.05); g.add(scan);
-  scan.traverse(o => { o.castShadow = false; o.receiveShadow = false; });
-  const slide = scan.getObjectByName('service_pistol_slide_a'), slideX = slide?.position.x ?? 0;
-  // spare magazine that drops out of the grip
-  const mag = part(g, -.02, -.1, .02); mag.rotation.x = -.25;
-  new Kit().add(m.steel, rbox(.1, .022, .045, .004).rotateZ(Math.PI / 2).rotateY(Math.PI / 2), 0, -.05, 0)
-    .add(m.polymer, rbox(.012, .03, .05, .004).rotateY(Math.PI / 2), 0, -.1, .002)
-    .add(m.brass, cylX(.0045, -.012, .012, 8).rotateY(Math.PI / 2), 0, .002, -.004).into(mag);
-  // hands live in a gun-aligned frame (x forward) like the other weapons; the scan's grip sits about 2 cm left of centre
-  const pb = new THREE.Group(); pb.rotation.y = Math.PI / 2; g.add(pb);
-  const right = new Rig(pb, m, 1, onGrip(-.03, .018, -.22, .012, .03, .018), V(-.45, -.32, .05), POSE.trigger);
-  const left = new Rig(pb, m, -1, onGrip(-.03, .018, -.22, .036, .055, -.06), V(-.15, -.42, -.42), POSE.wrap, true);
-  const tmp = blankPose(), lp = V(), q = new THREE.Quaternion();
+// ---------- muzzle flash ----------
+
+function flashTextures() {
+  const mk = (w: number, h: number, draw: (g: CanvasRenderingContext2D) => void) => {
+    const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d')!);
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+  };
+  // seen head-on: a hot core with ragged spikes
+  const star = mk(128, 128, (g) => {
+    g.translate(64, 64);
+    for (let i = 0; i < 9; i++) {
+      const a = i / 9 * Math.PI * 2 + Math.random() * .3, l = 40 + Math.random() * 22, w = .16 + Math.random() * .1;
+      const gr = g.createLinearGradient(0, 0, Math.cos(a) * l, Math.sin(a) * l); gr.addColorStop(0, 'rgba(255,240,200,1)'); gr.addColorStop(.5, 'rgba(255,170,60,.7)'); gr.addColorStop(1, 'rgba(255,120,30,0)');
+      g.fillStyle = gr; g.beginPath(); g.moveTo(Math.cos(a - w) * 10, Math.sin(a - w) * 10); g.lineTo(Math.cos(a) * l, Math.sin(a) * l); g.lineTo(Math.cos(a + w) * 10, Math.sin(a + w) * 10); g.fill();
+    }
+    const core = g.createRadialGradient(0, 0, 0, 0, 0, 30); core.addColorStop(0, 'rgba(255,255,240,1)'); core.addColorStop(.4, 'rgba(255,210,120,.9)'); core.addColorStop(1, 'rgba(255,140,40,0)');
+    g.fillStyle = core; g.fillRect(-64, -64, 128, 128);
+  });
+  // seen from the side: a flame cone with a bright base and broken tongues, base at the left edge
+  const side = mk(256, 64, (g) => {
+    for (let k = 0; k < 7; k++) {
+      const len = 120 + Math.random() * 130, hw = 8 + Math.random() * 14, y = 32 + (Math.random() - .5) * 10;
+      const gr = g.createLinearGradient(0, 0, len, 0); gr.addColorStop(0, 'rgba(255,245,210,1)'); gr.addColorStop(.35, 'rgba(255,180,70,.75)'); gr.addColorStop(1, 'rgba(255,110,30,0)');
+      g.fillStyle = gr; g.beginPath(); g.moveTo(0, 32 - hw * .6); g.quadraticCurveTo(len * .4, y - hw, len, y); g.quadraticCurveTo(len * .4, y + hw, 0, 32 + hw * .6); g.fill();
+    }
+    const core = g.createRadialGradient(0, 32, 0, 0, 32, 40); core.addColorStop(0, 'rgba(255,255,240,1)'); core.addColorStop(1, 'rgba(255,200,100,0)');
+    g.fillStyle = core; g.fillRect(0, 0, 60, 64);
+  });
+  return { star, side };
+}
+let FLASH_TEX: ReturnType<typeof flashTextures> | null = null;
+
+/**
+ * A muzzle flash fixed to the gun: a head-on star plus two crossed side cones, additive and
+ * brighter than white so the bloom pass blows it out. Each shot re-rolls its size and spin.
+ */
+class MuzzleFlash {
+  readonly group = new THREE.Group();
+  private t = 0; private star: THREE.Mesh; private cones: THREE.Mesh[] = [];
+  constructor(parent: THREE.Object3D, x: number, y: number, private size: number, tint = new THREE.Color(1, 1, 1)) {
+    FLASH_TEX ??= flashTextures();
+    const mat = (map: THREE.Texture) => new THREE.MeshBasicMaterial({ map, color: tint.clone().multiplyScalar(4), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, side: THREE.DoubleSide });
+    this.group.position.set(x, y, 0); parent.add(this.group);
+    this.star = new THREE.Mesh(new THREE.PlaneGeometry(1, 1).rotateY(Math.PI / 2), mat(FLASH_TEX.star)); this.group.add(this.star);
+    const cone = new THREE.PlaneGeometry(1, .25).translate(.5, 0, 0), cm = mat(FLASH_TEX.side);
+    for (let i = 0; i < 3; i++) { const c = new THREE.Mesh(cone, cm); c.rotation.x = i * Math.PI / 3; this.group.add(c); this.cones.push(c); }
+    this.group.traverse(o => { o.renderOrder = 5; o.frustumCulled = false; });
+    this.group.visible = false;
+  }
+  fire(): void {
+    this.t = .055; const s = this.size * (.8 + Math.random() * .45);
+    this.star.scale.setScalar(s * 2.2); this.star.rotation.x = Math.random() * Math.PI * 2;
+    this.cones.forEach((c, i) => c.scale.set(s * (2.4 + Math.random() * 1.4), s * (1.6 + Math.random() * .8), 1) && (c.rotation.x = i * Math.PI / 3 + Math.random() * .5));
+    this.group.visible = true;
+  }
+  update(dt: number): void {
+    if (this.t <= 0) return;
+    this.t -= dt; const k = Math.max(0, this.t / .055);
+    this.group.visible = this.t > 0; this.group.scale.setScalar(.6 + k * .4);
+  }
+}
+
+// ----- M-6 sidearm: an angular sci-fi service pistol -----
+function pistol(m: WeaponMaterials): Viewmodel {
+  const g = new THREE.Group(), b = bodyOf(g, 1.25); b.position.set(-.09, .03, .02); b.rotation.y += .2; // angled in toward the crosshair, showing its right flank
+  const k = new Kit();
+  // polymer frame with an accessory rail and a squared trigger guard
+  k.add(m.polymer, side([[-.088, .001], [.108, .001], [.112, -.012], [.1, -.024], [.02, -.024], [-.035, -.027], [-.088, -.014]], .027, [.003, .004, .006, .004, .006, .008, .006], .0025));
+  for (let x = .045; x < .1; x += .009) k.add(m.polymer, rbox(.005, .004, .022, .001, .0006), x, -.026, 0);
+  k.add(m.polymer, side([[-.03, -.024], [.035, -.024], [.04, -.03], [.036, -.058], [-.022, -.058]], .012, [.002, .003, .006, .008, .012], .0018, [{ pts: [[-.022, -.028], [.03, -.028], [.03, -.052], [-.016, -.052]], r: .008 }]));
+  k.add(m.steel, side([[-.004, -.024], [.003, -.024], [.002, -.038], [-.004, -.047], [-.009, -.045], [-.005, -.036]], .006, .0015, .0008));
+  // stippled grip, raked back, with a flared magazine well
+  const gripPts: P2[] = [[-.03, .002], [.016, .002], [.012, -.02], [.017, -.034], [.009, -.048], [.015, -.063], [.008, -.08], [.006, -.094], [-.04, -.094], [-.048, -.06], [-.045, -.02]];
+  k.add(m.grip, side(gripPts, .03, .006, .004), -.045, -.016, 0, 0, 0, -.25);
+  k.add(m.polymer, side([[-.03, 0], [.016, 0], [.018, .008], [-.034, .008]], .034, .003, .002), -.045 + Math.sin(.25) * .094 + .002, -.016 - Math.cos(.25) * .094 - .008, 0, 0, 0, -.25);
+  // glowing status strip along the frame
+  for (const z of [-1, 1]) k.add(m.bore, rbox(.09, .005, .002, .001, .0004), .035, -.009, z * .0136);
+  // barrel and a ported compensator
+  k.add(m.steel, cylX(.0075, -.02, .135, 14), 0, .02, 0);
+  k.add(m.steel, side([[.122, -.002], [.158, -.002], [.162, .006], [.162, .036], [.128, .038], [.122, .03]], .03, [.002, .003, .004, .006, .004, .002], .0025,
+    [0, 1, 2].map(i => ({ pts: [[.128 + i * .01, .026], [.134 + i * .01, .026], [.134 + i * .01, .042], [.128 + i * .01, .042]] as P2[], r: .002 }))));
+  k.add(m.bore, cylX(.0062, .155, .1635, 12), 0, .02, 0);
+  for (const [x, y] of [[-.07, -.008], [.09, -.012], [-.02, -.017]] as P2[]) k.screw(m.steel, x, y, .0139);
+  k.into(b);
+  const strip = new THREE.MeshBasicMaterial({ color: new THREE.Color(.25, 1.6, 2.4), toneMapped: false });
+  for (const z of [-1, 1]) { const s = new THREE.Mesh(new THREE.PlaneGeometry(.082, .0022), strip); s.position.set(.035, -.009, z * .0148); if (z < 0) s.rotation.y = Math.PI; b.add(s); }
+  // slide: angular, with chamfered top, through-ports over the barrel, rear serrations and sights
+  const slide = part(b, 0, 0, 0), sk = new Kit();
+  sk.add(m.steel, side([[-.094, .002], [.124, .002], [.128, .012], [.122, .034], [.06, .04], [-.07, .04], [-.094, .03]], .03, [.003, .003, .004, .006, .004, .008, .004], .003,
+    [0, 1, 2].map(i => ({ pts: [[.035 + i * .026, .01], [.054 + i * .026, .01], [.05 + i * .026, .03], [.039 + i * .026, .03]] as P2[], r: .003 }))));
+  sk.add(m.steel, side([[-.07, 0], [.06, 0], [.06, .004], [-.07, .004]], .018, .002, .001), 0, .039, 0);
+  for (let i = 0; i < 6; i++) for (const z of [-1, 1]) sk.add(m.bore, rbox(.0028, .024, .003, .001, .0004), -.086 + i * .0055, .021, z * .0145);
+  sk.add(m.steel, side([[-.09, 0], [-.07, 0], [-.072, .012], [-.086, .012]], .026, .002, .001, [{ pts: [[-.084, .004], [-.076, .004], [-.076, .014], [-.084, .014]], r: .001 }]), 0, .043, 0);
+  sk.add(m.steel, side([[.1, 0], [.114, 0], [.112, .01], [.104, .01]], .006, .0015, .0006), 0, .043, 0);
+  sk.into(slide);
+  const dot = new THREE.Mesh(new THREE.SphereGeometry(.0018, 8, 6), new THREE.MeshBasicMaterial({ color: new THREE.Color(.5, 3, 1), toneMapped: false })); dot.position.set(.1035, .051, 0); slide.add(dot);
+  // round counter on the back of the slide, facing the shooter
+  const ctr = counterDisplay();
+  const scr = new THREE.Mesh(new THREE.PlaneGeometry(.022, .012), new THREE.MeshBasicMaterial({ map: ctr.tex, toneMapped: false }));
+  scr.rotation.y = -Math.PI / 2; scr.position.set(-.0955, .022, 0); slide.add(scr);
+  // magazine in the grip, dropped during reloads
+  const mag = part(b, -.045, -.016, 0); mag.rotation.z = -.25;
+  new Kit().add(m.steel, rbox(.036, .09, .022, .003), -.012, -.05, 0).add(m.polymer, side([[-.032, 0], [.014, 0], [.016, .008], [-.034, .008]], .03, .003, .002), 0, -.104, 0)
+    .add(m.brass, cylX(.0045, -.024, .0, 8), 0, -.003, 0).into(mag);
+  const right = new Rig(b, m, 1, onGrip(-.045, -.016, -.25, .025, .045, .035), V(-.42, -.3, .1), POSE.trigger);
+  const left = new Rig(b, m, -1, onGrip(-.045, -.016, -.25, .05, .06, -.038), V(-.28, -.38, -.28), POSE.wrap, true);
+  const fl = new MuzzleFlash(b, .163, .02, .14);
+  const lp = V(), q = new THREE.Quaternion(), e = new THREE.Euler();
+  let shown = -1;
   return {
-    group: g, muzzle: V(0, .01, -.16),
+    group: g, muzzle: muzzleOf(b, .163, .02), flash: () => fl.fire(),
     anim(R, dt, info) {
-      const k = travel(R, .1, .3, .32, .48); mag.visible = k > .02; mag.position.y = mag.userData.home.y - k * .22;
-      if (slide) slide.position.x = slideX - (R >= 0 ? (R < .78 ? .024 : .024 * (1 - smooth(.78, .82, R))) : Math.min(1, info.recoil * 2.5) * .022);
-      // support hand leaves the grip, catches the falling mag's replacement and seats it
+      const t = travel(R, .1, .3, .32, .48); mag.visible = t < .98; mag.position.y = mag.userData.home.y - t * .2; mag.position.x = mag.userData.home.x - t * .05;
+      slide.position.x = -(R >= 0 ? (R < .78 ? .03 : .03 * (1 - smooth(.78, .82, R))) : Math.min(1, info.recoil * 2.5) * .028);
+      // support hand drops to the belt for a fresh mag and drives it home
       const w = follow(R, .12, .5);
-      lp.set(-mag.position.z, mag.position.y, mag.position.x).add(_p.set(-.07, -.07, -.03)); lp.lerpVectors(left.homePos, lp, w);
-      q.copy(left.homeQ).slerp(_q.setFromEuler(new THREE.Euler(-.4, .3, 0)).premultiply(left.homeQ), w);
-      left.place(lp, q); left.hand.blend(POSE.wrap, POSE.hold, w);
-      void dt; void tmp; void right;
+      lp.copy(mag.position).add(_p.set(-.07, -.13, -.03)); lp.lerpVectors(left.homePos, lp, w);
+      left.place(lp, q.copy(left.homeQ).slerp(_q.setFromEuler(e.set(-.5, .3, 0)).premultiply(left.homeQ), w)); left.hand.blend(POSE.wrap, POSE.hold, w);
+      if (shown !== info.count) { shown = info.count; ctr.draw(Math.floor(info.count)); }
+      fl.update(dt); void right;
     },
   };
 }
@@ -540,8 +635,9 @@ function pulseRifle(m: WeaponMaterials): Viewmodel {
   const left = new Rig(b, m, -1, underFore(.2, -.124, .015), V(-.15, -.4, -.45), POSE.wrap, true);
   const lp = V(), q = new THREE.Quaternion(), e = new THREE.Euler();
   let shown = -1;
+  const fl = new MuzzleFlash(b, .526, .029, .22);
   return {
-    group: g, muzzle: muzzleOf(b, .526, .029),
+    group: g, muzzle: muzzleOf(b, .526, .029), flash: () => fl.fire(),
     anim(R, dt, info) {
       const t = travel(R, .12, .3, .32, .52); mag.visible = t < .98; mag.position.y = mag.userData.home.y - t * .25; mag.position.x = mag.userData.home.x - t * .04;
       const bk = R < 0 ? 0 : travel(R, .7, .74, .77, .8); bolt.position.x = bolt.userData.home.x - bk * .06;
@@ -553,7 +649,7 @@ function pulseRifle(m: WeaponMaterials): Viewmodel {
       left.place(target.lerpVectors(left.homePos, target, w), q.copy(left.homeQ).slerp(_q.setFromEuler(e.set(wb > wm ? -1.2 : -.3, wb > wm ? .6 : .2, 0)).premultiply(left.homeQ), w));
       left.hand.blend(POSE.wrap, wb > wm ? POSE.pinch : POSE.hold, w);
       if (shown !== info.count) { shown = info.count; ctr.draw(Math.floor(info.count)); }
-      void dt; void right;
+      fl.update(dt); void dt; void right;
     },
   };
 }
@@ -700,15 +796,16 @@ function smartGun(m: WeaponMaterials): Viewmodel {
   const right = new Rig(b, m, 1, onGrip(-.13, -.05, -.25, .024, .045, .04), V(-.5, -.34, .05), POSE.trigger);
   const left = new Rig(b, m, -1, onGrip(.25, -.055, -.05, .032, .055, -.04), V(-.1, -.42, -.45), POSE.wrap, true);
   const lp = V(), q = new THREE.Quaternion(), e = new THREE.Euler();
+  const fl = new MuzzleFlash(b, .735, 0, .32);
   return {
-    group: g, muzzle: muzzleOf(b, .735, 0),
+    group: g, muzzle: muzzleOf(b, .735, 0), flash: () => fl.fire(),
     anim(R, dt, info) {
       const t = travel(R, .2, .38, .42, .575); mag.visible = t < .98; mag.position.z = mag.userData.home.z - t * .2; mag.position.y = mag.userData.home.y - t * .12;
       spin.rotation.z += dt * (info.firing || (R > .75 && R < 1) ? 30 : 0);
       const w = follow(R, .22, .58);
       lp.copy(mag.position).add(_p.set(.0, -.05, -.07)); lp.lerpVectors(left.homePos, lp, w);
       left.place(lp, q.copy(left.homeQ).slerp(_q.setFromEuler(e.set(-.8, 0, .2)).premultiply(left.homeQ), w)); left.hand.blend(POSE.wrap, POSE.hold, w);
-      void right;
+      fl.update(dt); void right;
     },
   };
 }

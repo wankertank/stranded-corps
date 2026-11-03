@@ -17,7 +17,7 @@ const base = import.meta.env.BASE_URL;
 export const MODEL_NAMES = [
   'moon_rock_01', 'moon_rock_02', 'moon_rock_03', 'moon_rock_04', 'moon_rock_05', 'moon_rock_06', 'moon_rock_07',
   'wooden_military_crate', 'old_military_crate', 'utility_box_01', 'metal_tool_chest', 'barrel_01', 'concrete_road_barrier',
-  'service_pistol', 'ammo_box', 'metal_jerrycan', 'propane_tank', 'portable_generator', 'medical_box',
+  'ammo_box', 'metal_jerrycan', 'propane_tank', 'portable_generator', 'medical_box',
 ] as const;
 export type ModelName = (typeof MODEL_NAMES)[number];
 
