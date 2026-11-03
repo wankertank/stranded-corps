@@ -5,6 +5,7 @@ import { loadPBR, loadEnvironment, triplanar, terrainMaterial } from '../render/
 import { loft, plate, latheX } from '../render/shapes';
 import { skinSet, skarnGeometry } from '../render/skarn';
 import { loadModels, placeModel, setDarkened, setMaterial, tinted } from '../render/models';
+import { weaponMaterials, buildViewmodels as buildGunViewmodels } from '../render/viewmodels';
 
 usePerceptualFog();
 
@@ -171,17 +172,13 @@ const M = {
   red: new THREE.MeshStandardMaterial({ color: col('#ff4030'), emissive: col('#ff4030'), emissiveIntensity: 0 }),
   acidSac: new THREE.MeshStandardMaterial({ color: col('#9cc23a'), emissive: col('#7ea12a'), emissiveIntensity: .8, roughness: .4 }),
   gun: new THREE.MeshStandardMaterial({ color: col('#3b4146'), roughness: .4, metalness: .6 }),
-  gunOlive: new THREE.MeshStandardMaterial({ color: col('#323a2b'), roughness: .65, metalness: .25 }),
-  glove: new THREE.MeshStandardMaterial({ color: col('#2b2f26'), roughness: .9 }),
-  brass: new THREE.MeshStandardMaterial({ color: col('#b08a3c'), roughness: .35, metalness: .9 }),
-  fuel: new THREE.MeshStandardMaterial({ color: col('#8a3a1c'), roughness: .5, metalness: .4 }),
 };
 const CRATE_MAT = { hive: new THREE.MeshStandardMaterial({ color: col('#3a4529'), roughness: .5 }) };
 // Texture the shared materials. Each keeps its tuned color as a tint over the scanned surface.
 triplanar(M.rock, TX_ROCK, { scale: .35, normalStrength: 1.4 });
 triplanar(M.burnt, TX_ROCK, { scale: .5 });
 for (const m of [M.metal, M.darkMetal, M.hull, M.deck]) triplanar(m, TX_METAL, { scale: .45, useMetal: .6 });
-for (const m of [M.gun, M.gunOlive]) triplanar(m, TX_METAL, { scale: 6, normalStrength: .5, useMetal: .4 });
+triplanar(M.gun, TX_METAL, { scale: 6, normalStrength: .5, useMetal: .4 });
 triplanar(M.concrete, TX_CONCRETE, { scale: .3 });
 triplanar(M.sand, TX_GROUND, { scale: .4 });
 // a placed CC0 model, sitting on its footprint at (x, y, z)
@@ -553,100 +550,12 @@ function buildStruct(type, ghost) {
 }
 
 // ---------- viewmodel ----------
-const vm = new THREE.Group(); camera.add(vm); vm.position.set(.24, -.24, -.42); vm.scale.setScalar(.75);
+const vm = new THREE.Group(); camera.add(vm); vm.position.set(.15, -.13, -.34); vm.scale.setScalar(.75);
 const VMS = {};
-// Pulse rifle round counter: two red seven-segment digits on top of the receiver.
-const counterTex = canvasTex(128, 64, () => {});
-function drawCounter(n) {
-  const c = counterTex.image, g = c.getContext('2d'); g.fillStyle = '#120505'; g.fillRect(0, 0, 128, 64);
-  const SEG = [0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f], txt = String(Math.max(0, Math.min(99, n))).padStart(2, '0');
-  [...txt].forEach((ch, i) => {
-    const m = SEG[+ch], x = 14 + i * 56, y = 8, w = 36, h = 24, t = 6;
-    const bars = [[x, y, w, t], [x + w - t, y, t, h], [x + w - t, y + h, t, h], [x, y + 2 * h - t, w, t], [x, y + h, t, h], [x, y, t, h], [x, y + h - t / 2, w, t]];
-    bars.forEach((b, k) => { g.fillStyle = m & (1 << k) ? '#ff3a24' : '#2a0b08'; g.fillRect(...b); });
-  });
-  counterTex.needsUpdate = true;
-}
-// a magazine's travel during a reload: out over [a, b], gone until c, back in over [c, d]
-function magTravel(R, a, b, c, d) {
-  if (R < a || R > d) return 0;
-  return R < b ? smooth(a, b, R) : R < c ? 1 : 1 - smooth(c, d, R);
-}
+// first-person guns, gloved hands and sleeves are built in src/render/viewmodels.ts
 function buildViewmodels() {
-  const add = (parent, geo, mat, x, y, z, sx = 1, sy = 1, sz = 1) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.scale.set(sx, sy, sz); parent.add(m); return m; };
-  const mk = () => { const g = new THREE.Group(); vm.add(g); g.visible = false; return g; };
-  // models are laid out with the muzzle along +x, then turned to point down the view (-z)
-  const body = (g) => { const b = new THREE.Group(); b.rotation.y = Math.PI / 2; b.scale.setScalar(.88); g.add(b); return b; };
-  const part = (parent, x, y, z) => { const p = new THREE.Group(); p.position.set(x, y, z); p.userData.home = p.position.clone(); parent.add(p); return p; };
-
-  let g = mk(); VMS.pistol = g;
-  // scanned service pistol, barrel along +x in the file; the slide is its own part so it can cycle
-  const pistol = placeModel(MODELS.service_pistol); pistol.rotation.y = Math.PI / 2; pistol.scale.setScalar(1.15); pistol.position.set(-.02, -.08, -.05); g.add(pistol);
-  pistol.traverse(o => { o.castShadow = false; o.receiveShadow = false; });
-  g.slide = pistol.getObjectByName('service_pistol_slide_a'); g.slideX = g.slide?.position.x ?? 0;
-  g.mag = part(g, -.02, -.1, .02); g.mag.rotation.x = -.25; add(g.mag, BOX, M.gun, 0, -.05, 0, .022, .1, .045); add(g.mag, BOX, M.brass, 0, .003, -.006, .012, .006, .03);
-  g.hand = add(g, BOX, M.glove, 0, -.12, .06, .08, .1, .12);
-  g.muzzle = new THREE.Vector3(0, .01, -.16);
-  g.anim = (R, dt, g) => {
-    // drop the mag out of the grip, seat a fresh one, then the slide snaps forward
-    const k = magTravel(R, .1, .3, .32, .48); g.mag.visible = k > .02; g.mag.position.y = g.mag.userData.home.y - k * .22;
-    if (R >= 0 && g.slide) g.slide.position.x = g.slideX - (R < .78 ? .024 : .024 * (1 - smooth(.78, .82, R)));
-  };
-
-  g = mk(); VMS.pulse = g;
-  let b = body(g);
-  add(b, loft([{ x: -.16, w: .062, h: .1, y: .0, n: 6 }, { x: .1, w: .07, h: .11, y: .005, n: 6 }, { x: .38, w: .066, h: .1, y: 0, n: 6 }, { x: .43, w: .052, h: .075, y: -.005, n: 4 }], 12), M.gunOlive, 0, 0, 0);
-  add(b, loft([{ x: -.14, w: .05, h: .05, y: .07, n: 6 }, { x: .2, w: .05, h: .05, y: .07, n: 6 }, { x: .26, w: .03, h: .03, y: .065, n: 4 }], 8), M.gun, 0, 0, 0);
-  add(b, latheX([[.012, 0], [.012, .14], [.016, .14], [.016, .17], [0, .17]], 10), M.gun, .4, .012, 0);
-  add(b, latheX([[.024, 0], [.024, .34], [.028, .34], [.028, .36], [0, .36]], 12), M.gun, .04, -.07, 0); // underslung grenade launcher
-  add(b, BOX, M.gun, .25, -.088, 0, .12, .035, .06); // pump grip
-  const grip = add(b, BOX, M.gun, -.09, -.1, 0, .04, .11, .035); grip.rotation.z = .3;
-  for (const z of [-.022, .022]) add(b, BOX, M.gun, -.26, .0, z, .2, .012, .01); // wire stock
-  add(b, BOX, M.gun, -.36, -.01, 0, .02, .09, .05);
-  for (let i = 0; i < 4; i++) add(b, BOX, M.gun, .12 + i * .055, .03, -.036, .03, .018, .004); // shroud vents
-  const ctr = add(b, new THREE.PlaneGeometry(.05, .025), new THREE.MeshBasicMaterial({ map: counterTex, toneMapped: false }), -.08, .0961, 0); ctr.rotation.x = -Math.PI / 2; ctr.rotation.z = -Math.PI / 2;
-  g.mag = part(b, .0, -.06, 0); g.mag.rotation.z = -.15; add(g.mag, BOX, M.gun, 0, -.06, 0, .04, .12, .03);
-  g.bolt = part(b, .05, .02, -.037); add(g.bolt, BOX, M.darkMetal, 0, 0, 0, .025, .015, .012);
-  g.hand = add(g, BOX, M.glove, -.02, -.1, .08, .08, .1, .12); add(g, BOX, M.glove, 0, -.08, -.28, .08, .07, .1);
-  g.muzzle = new THREE.Vector3(0, .013, -.5);
-  g.anim = (R, dt, g) => {
-    const k = magTravel(R, .12, .3, .32, .52); g.mag.visible = k < .98; g.mag.position.y = g.mag.userData.home.y - k * .25; g.mag.position.x = g.mag.userData.home.x - k * .04;
-    // charging handle racked back and released
-    const bk = R < 0 ? 0 : magTravel(R, .7, .74, .77, .8); g.bolt.position.x = g.bolt.userData.home.x - bk * .06;
-    if (g.shown !== S.mags.pulse) { g.shown = S.mags.pulse; drawCounter(Math.floor(S.mags.pulse ?? 0)); }
-  };
-
-  g = mk(); VMS.flamer = g;
-  b = body(g);
-  add(b, latheX([[.03, -.22], [.03, .4], [.024, .4], [.024, .46], [.04, .5], [.036, .52], [0, .52]], 14), M.gun, 0, 0, 0);
-  for (let i = 0; i < 6; i++) add(b, new THREE.TorusGeometry(.032, .005, 5, 14), M.darkMetal, .1 + i * .04, 0, 0).rotation.y = Math.PI / 2; // heat-sink rings
-  add(b, BOX, M.gun, -.12, -.075, 0, .04, .11, .035).rotation.z = .3; add(b, BOX, M.gun, .22, -.065, 0, .035, .09, .035);
-  g.mag = part(b, .04, -.075, 0); add(g.mag, latheX([[0, -.1], [.035, -.095], [.04, -.07], [.04, .1], [.035, .12], [0, .125]], 14), M.fuel, 0, 0, 0);
-  g.pilot = add(b, SPH_LO, M.amber, .515, -.03, 0, .012, .012, .012);
-  g.hand = add(g, BOX, M.glove, 0, -.1, .1, .08, .1, .12);
-  g.muzzle = new THREE.Vector3(0, 0, -.46);
-  g.anim = (R, dt, g) => {
-    const k = magTravel(R, .2, .32, .45, .63); g.mag.visible = k < .98; g.mag.position.y = g.mag.userData.home.y - k * .22;
-    const lit = R < 0 || R > .85; g.pilot.visible = lit; g.pilot.scale.setScalar(.011 + Math.random() * .004 + (S.muzzle > 0 ? .006 : 0));
-  };
-
-  g = mk(); VMS.smart = g;
-  b = body(g);
-  add(b, loft([{ x: -.2, w: .1, h: .12, y: 0, n: 6 }, { x: .25, w: .12, h: .14, y: .005, n: 6 }, { x: .4, w: .1, h: .11, y: 0, n: 5 }, { x: .44, w: .07, h: .07, y: 0, n: 4 }], 12), M.gun, 0, 0, 0);
-  add(b, latheX([[.035, 0], [.035, .18], [.028, .18], [.028, .22], [0, .22]], 14), M.darkMetal, .4, 0, 0);
-  for (let i = 0; i < 5; i++) add(b, BOX, M.darkMetal, .43 + i * .035, .036, 0, .02, .008, .05); // barrel jacket vents
-  add(b, BOX, M.metal, .15, .1, 0, .3, .03, .03); // carry rail
-  add(b, BOX, new THREE.MeshStandardMaterial({ color: col('#1c4a5c'), emissive: col('#2aa0d0'), emissiveIntensity: .35 }), -.05, .085, -.03, .06, .03, .04);
-  add(b, BOX, M.gun, .3, -.1, 0, .04, .1, .04); add(b, BOX, M.gun, -.08, -.1, 0, .04, .1, .04);
-  g.mag = part(b, .08, 0, -.075); g.mag.rotation.x = Math.PI / 2; add(g.mag, latheX([[0, -.04], [.065, -.04], [.07, -.03], [.07, .03], [.065, .04], [0, .04]], 18), M.gunOlive, 0, 0, 0).rotation.y = Math.PI / 2;
-  g.spin = add(g.mag, new THREE.TorusGeometry(.045, .008, 4, 10), M.darkMetal, 0, 0, -.042);
-  g.hand = add(g, BOX, M.glove, .02, -.12, .1, .08, .1, .12);
-  g.muzzle = new THREE.Vector3(0, 0, -.58);
-  g.anim = (R, dt, g) => {
-    // the drum unlatches and swings out to the side, a fresh one goes in, the feed motor spins up
-    const k = magTravel(R, .2, .38, .42, .575); g.mag.visible = k < .98; g.mag.position.z = g.mag.userData.home.z - k * .2; g.mag.position.y = g.mag.userData.home.y - k * .12;
-    g.spin.rotation.z += dt * (S.muzzle > 0 || (R > .75 && R < 1) ? 30 : 0);
-  };
+  const built = buildGunViewmodels(weaponMaterials(), placeModel(MODELS.service_pistol));
+  for (const [k, v] of Object.entries(built)) { const g = v.group; g.visible = false; g.muzzle = v.muzzle; g.vmAnim = v.anim; vm.add(g); VMS[k] = g; }
 }
 // ---------- sound: everything is synthesized with Web Audio, so there are no files to load ----------
 const VOICE = { crawler: .7, drone: 1, spitter: 1.1, warrior: 1.6, warden: 1.9, brood: 3 };
@@ -1389,12 +1298,11 @@ function updateCamera(dt) {
   vmSprint = lerp(vmSprint, p.sprint && p.moving ? 1 : 0, Math.min(1, dt * 8));
   const dk = S.draw / .45, tilt = R < 0 ? 0 : smooth(0, .12, R) * (1 - smooth(.86, 1, R)), auto = S.muzzle > 0 && wid !== 'pistol' ? 1 : 0;
   vm.position.set(
-    .24 + Math.sin(p.bob * .5) * bobA * .3 + Math.sin(S.t * .9) * .003 - vmSprint * .05 - tilt * .09 + auto * rand(-.002, .002),
-    -.24 - Math.abs(Math.sin(p.bob)) * bobA * .3 + Math.sin(S.t * 1.7) * .004 - vmSprint * .05 - dk * dk * .32 + tilt * .03 + auto * rand(-.002, .002),
-    -.42 + S.recoil * .06 + tilt * .08);
-  vm.rotation.set(S.recoil * .12 - vmSprint * .2 - dk * .9 + tilt * .25, vmSprint * .55 + tilt * .2, vmSprint * .3 + tilt * .35);
-  if (VMS.pistol.slide) VMS.pistol.slide.position.x = VMS.pistol.slideX - Math.min(1, S.recoil * 2.5) * .022;
-  g.anim?.(R, dt, g);
+    .15 + Math.sin(p.bob * .5) * bobA * .3 + Math.sin(S.t * .9) * .003 - vmSprint * .05 - tilt * .09 + auto * rand(-.002, .002),
+    -.13 - Math.abs(Math.sin(p.bob)) * bobA * .3 + Math.sin(S.t * 1.7) * .004 - vmSprint * .05 - dk * dk * .32 + tilt * .03 + auto * rand(-.002, .002),
+    -.34 + S.recoil * .06 + tilt * .08);
+  vm.rotation.set(S.recoil * .12 - vmSprint * .2 - dk * .9 + tilt * .25, .06 + vmSprint * .55 + tilt * .2, vmSprint * .3 + tilt * .35);
+  g.vmAnim(R, dt, { count: S.mags[wid] ?? 0, capacity: WEAPONS[wid].mag, firing: S.muzzle > 0, recoil: S.recoil });
   if (S.muzzle > 0 && wid !== 'flamer') { _mz.copy(VMS[wid].muzzle); muzzleLight.position.copy(_mz).add(vm.position); }
   // build ghost
   if (S.buildMode) {
