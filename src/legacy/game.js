@@ -6,6 +6,9 @@ import { loft, plate, latheX } from '../render/shapes';
 import { skinSet, skarnGeometry } from '../render/skarn';
 import { loadModels, placeModel, setDarkened, setMaterial, tinted } from '../render/models';
 import { weaponMaterials, buildViewmodels as buildGunViewmodels } from '../render/viewmodels';
+import { WORLD, BOUND, GRID_N, POIS, poi, H, slope, edgeDist, buildTerrain, fbm, NZ } from '../world/terrain';
+import { Buckets } from '../world/spatial';
+import { buildPOIs } from './pois';
 
 usePerceptualFog();
 
@@ -27,13 +30,13 @@ const d2 = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 const col = h => new THREE.Color(h);
 
 // ---------- world constants (metres) ----------
-const WORLD = 280, GRID = 2, DAY = 90, NIGHT = 70;
-const BASE = { x: 140, z: 145 }, BENCH = { x: 146, z: 150 }, HIVE = { x: 250, z: 35 };
-const DOMES = [
-  { x: 75, z: 85, n: 'HALDANE DOME A' }, { x: 200, z: 170, n: 'HALDANE DOME B' }, { x: 60, z: 215, n: 'HALDANE DOME C' },
-  { x: 180, z: 75, n: 'HALDANE DOME D' }, { x: 130, z: 245, n: 'HALDANE DOME E' }, { x: 45, z: 35, n: 'HALDANE DOME F' },
-];
-const RIGS = [{ x: 240, z: 235 }, { x: 25, z: 145 }, { x: 235, z: 115 }, { x: 110, z: 30 }, { x: 175, z: 260 }];
+// The map is about a kilometre of playable ground inside a ring of mountains (src/world/terrain.ts).
+// Days run longer than on the old 280 m map so there is time to travel out and back before dark.
+const GRID = 2, DAY = 210, NIGHT = 70;
+buildTerrain();
+const BASE = poi('base'), BENCH = { x: BASE.x + 6, z: BASE.z + 5 }, HIVE = poi('hive');
+const DOMES = POIS.filter(q => q.kind === 'dome').map(q => ({ x: q.x, z: q.z, n: q.name }));
+const RIGS = POIS.filter(q => q.kind === 'rig');
 const TIER_NAMES = ['', 'Survivor', 'Scavenger', 'Engineer', 'Veteran'];
 const WIND = { x: -2.2, z: 1.0 };
 
@@ -76,28 +79,6 @@ const BUILDS = [
 ];
 const RES = ['scrap', 'metal', 'cells', 'chips', 'cores'];
 
-// ---------- noise and terrain ----------
-function valueNoise(n, seed) {
-  const r = mulberry(seed), g = new Float32Array(n * n); for (let i = 0; i < g.length; i++) g[i] = r();
-  return (x, y) => {
-    const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
-    const x0 = ((xi % n) + n) % n, y0 = ((yi % n) + n) % n, x1 = (x0 + 1) % n, y1 = (y0 + 1) % n;
-    const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
-    const a = g[y0 * n + x0], b = g[y0 * n + x1], c = g[y1 * n + x0], d = g[y1 * n + x1];
-    return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
-  };
-}
-const fbm = (nz, x, y, oct) => { let s = 0, amp = .5, f = 1, tot = 0; for (let i = 0; i < oct; i++) { s += nz(x * f, y * f) * amp; tot += amp; amp *= .5; f *= 2; } return s / tot; };
-const NZ1 = valueNoise(64, 3), NZ2 = valueNoise(64, 8), NZ3 = valueNoise(64, 13);
-const FLAT = [[BASE, 22, 40], [HIVE, 30, 50], ...DOMES.map(d => [d, 14, 24]), ...RIGS.map(d => [d, 12, 20])];
-function H(x, z) {
-  let h = (fbm(NZ1, x / 40, z / 40, 4) - .5) * 10 + (fbm(NZ2, x / 9, z / 9, 3) - .5) * 1.4;
-  let f = 1; for (const [p, a, b] of FLAT) f = Math.min(f, smooth(a, b, Math.hypot(x - p.x, z - p.z)));
-  h *= f;
-  const e = Math.min(x, z, WORLD - x, WORLD - z); if (e < 26) h += Math.pow(26 - e, 1.5) * .7;
-  return h;
-}
-
 // ---------- three setup ----------
 // No canvas MSAA: the post-processing chain renders into a multisampled target instead.
 const renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: false, powerPreference: 'high-performance' });
@@ -110,9 +91,9 @@ renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05;
 const scene = new THREE.Scene();
-scene.fog = new THREE.FogExp2(col('#7f8b94'), .014);
+scene.fog = new THREE.FogExp2(col('#7f8b94'), .0062);
 scene.background = scene.fog.color.clone();
-const camera = new THREE.PerspectiveCamera(74, 1, .08, 500);
+const camera = new THREE.PerspectiveCamera(74, 1, .08, 800);
 camera.rotation.order = 'YXZ';
 const post = createPostFX(renderer, scene, camera, quality);
 scene.add(camera);
@@ -190,38 +171,82 @@ function mesh(geo, mat, x, y, z, sx = 1, sy = 1, sz = 1, parent = scene, shadow 
 }
 
 // ---------- static world ----------
-let terrainMesh, stars, planet, snowPts, rocks = [], cratesStatic = [];
+let terrainMesh, stars, planet, snowPts, rocks = [];
+// collision: boulders and building footprints, bucketed by position
+const rockGrid = new Buckets(16), solidGrid = new Buckets(16), solids = [];
+function addRock(k) { rocks.push(k); rockGrid.insert(k, k.x, k.z, k.r); }
+/** A solid oriented box footprint, w by d metres turned by ry, `top` metres above the ground. */
+function addSolid(x, z, w, d, ry, top) { const s = { x, z, hw: w / 2, hd: d / 2, c: Math.cos(ry), s: Math.sin(ry), top: H(x, z) + top }; solids.push(s); solidGrid.insert(s, x, z, Math.hypot(w, d) / 2); }
+// set by the point-of-interest builders, used by newGame and the update loop
+const LOOT_SPOTS = [], SLEEPERS = [], VENTS = [], CULL = [];
+const POI_MAT = (() => {
+  const paint = (c, rough = .7, metal = .4, set = TX_HULL, scale = .45) => triplanar(new THREE.MeshStandardMaterial({ color: col(c), roughness: rough, metalness: metal }), set, { scale, useMetal: .5 });
+  const glow = (c, e, k) => new THREE.MeshStandardMaterial({ color: col(c), emissive: col(e), emissiveIntensity: k, roughness: .4 });
+  const padTex = canvasTex(512, 256, (g, w, h) => { g.clearRect(0, 0, w, h); g.fillStyle = 'rgba(220,214,190,.8)'; g.font = 'bold 190px Arial, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('K-1', w / 2, h / 2 + 10); });
+  return {
+    panel: paint('#6e7266', .78, .35, TX_HULL, .2), trim: paint('#4c5148', .7, .45), roof: paint('#3a3d38', .8, .4),
+    window: new THREE.MeshStandardMaterial({ color: col('#11181c'), roughness: .15, metalness: .5 }), windowLit: glow('#3a3220', '#ffc874', 1.6), lampOff: glow('#2a2a26', '#ffe6a8', .05),
+    paint: new THREE.MeshStandardMaterial({ color: col('#c9c2a6'), roughness: .8, polygonOffset: true, polygonOffsetFactor: -2 }),
+    padText: new THREE.MeshStandardMaterial({ map: padTex, transparent: true, roughness: .8, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3 }),
+    glassDark: new THREE.MeshStandardMaterial({ color: col('#0d161b'), roughness: .08, metalness: .6 }), glass: M.glass,
+    tankGlow: glow('#1f3b12', '#8dff52', 2.2), hazard: M.hazard, fence: new THREE.MeshStandardMaterial({ color: col('#555b5c'), roughness: .6, metalness: .7, transparent: true, opacity: .55, depthWrite: false }),
+    cOrange: paint('#9a4a22'), cBlue: paint('#2f4f6e'), cOlive: paint('#4a5338'), cGrey: paint('#6a6e6e'), cRed: paint('#6e2a24'),
+    crystal: glow('#123a44', '#52e4ff', 2.4), tent: new THREE.MeshStandardMaterial({ color: col('#8a6a3a'), roughness: .95 }),
+    ice: new THREE.MeshPhysicalMaterial({ color: col('#9fc4d6'), roughness: .12, metalness: 0, clearcoat: 1, clearcoatRoughness: .08, transparent: true, opacity: .92 }),
+  };
+})();
 function buildWorld() {
-  const seg = 160, geo = new THREE.PlaneGeometry(WORLD, WORLD, seg, seg); geo.rotateX(-Math.PI / 2);
+  const seg = GRID_N, geo = new THREE.PlaneGeometry(WORLD, WORLD, seg, seg); geo.rotateX(-Math.PI / 2);
   const pos = geo.attributes.position, cols = new Float32Array(pos.count * 3), snows = new Float32Array(pos.count);
+  const nests = POIS.filter(q => q.kind === 'hive' || q.kind === 'pocket');
   for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i) + WORLD / 2, z = pos.getZ(i) + WORLD / 2, h = H(x, z); pos.setY(i, h);
-    const v = fbm(NZ3, x / 22, z / 22, 4), snowK = clamp((v - .55) * 4, 0, 1) * .8 + clamp((h - 3) / 8, 0, 1) * .5, dk = clamp((.45 - v) * 4, 0, 1) * .45;
-    const nest = 1 - smooth(25, 80, Math.hypot(x - HIVE.x, z - HIVE.z));
-    let c = lerp(.82, .4, dk); let r = c, g2 = c, b = c;
+    const x = pos.getX(i) + WORLD / 2, z = pos.getZ(i) + WORLD / 2, h = H(x, z), sl = slope(x, z); pos.setY(i, h);
+    // snow settles on flat ground and high up; steep faces show dark rock
+    const v = fbm(NZ[2], x / 22, z / 22, 4), steep = clamp((sl - .55) * 1.8, 0, 1);
+    const snowK = (clamp((v - .55) * 4, 0, 1) * .8 + clamp((h - 14) / 24, 0, 1) * .7) * (1 - steep), dk = clamp((.45 - v) * 4, 0, 1) * .45 + steep * .4;
+    let nest = 0; for (const q of nests) nest = Math.max(nest, 1 - smooth(q.kind === 'hive' ? 25 : 10, q.kind === 'hive' ? 80 : 30, Math.hypot(x - q.x, z - q.z)));
+    const c = lerp(.82, .4, clamp(dk, 0, 1));
     snows[i] = clamp(snowK, 0, 1) * (1 - nest);
-    r = lerp(r, .22, nest); g2 = lerp(g2, .3, nest); b = lerp(b, .25, nest);
-    cols[i * 3] = r; cols[i * 3 + 1] = g2; cols[i * 3 + 2] = b;
+    cols[i * 3] = lerp(c, .22, nest); cols[i * 3 + 1] = lerp(c, .3, nest); cols[i * 3 + 2] = lerp(c, .25, nest);
   }
   geo.setAttribute('color', new THREE.BufferAttribute(cols, 3)); geo.setAttribute('snow', new THREE.BufferAttribute(snows, 1)); geo.computeVertexNormals();
   terrainMesh = new THREE.Mesh(geo, terrainMaterial(TX_GROUND, TX_SNOW, 1 / 3.5, .18));
   terrainMesh.position.set(WORLD / 2, 0, WORLD / 2); terrainMesh.receiveShadow = true; scene.add(terrainMesh);
 
-  // rocks
-  // photoscanned moon rocks, darkened from pale lunar grey to Veyra's basalt
+  // Photoscanned moon rocks, darkened to Veyra's basalt and drawn as instances in 160 m cells
+  // (one draw call per rock model per cell, and whole cells drop out with distance).
   const r = mulberry(7), ROCKS = [1, 2, 3, 4, 5, 6, 7].map(i => tinted(MODELS[`moon_rock_0${i}`], col('#55585b')));
-  const near = (x, z, p, d) => Math.hypot(x - p.x, z - p.z) < d;
-  for (let i = 0; i < 300; i++) {
-    const x = 8 + r() * (WORLD - 16), z = 8 + r() * (WORLD - 16), rad = .8 + Math.pow(r(), 2) * 3.2;
-    if (near(x, z, BASE, 18) || near(x, z, HIVE, 32) || DOMES.some(d => near(x, z, d, 13)) || RIGS.some(d => near(x, z, d, 11))) continue;
-    const y = H(x, z);
-    const a = ROCKS[i % 7], k = rad * 2.1 / Math.max(a.size.x, a.size.z), sy = .7 + r() * .5, sz = .8 + r() * .4;
-    const m = prop(a, x, y - rad * .2, z, {}, scene, r() * TAU); m.scale.set(k, rad * 1.5 * sy / a.size.y, k * sz);
-    rocks.push({ x, z, r: rad, y });
+  const CELLR = 160, batches = new Map(), _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _p = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
+  const clearOf = (x, z, pad) => d2({ x, z }, BASE) > 22 + pad && !POIS.some(q => q.kind !== 'crater' && q.kind !== 'lake' ? Math.hypot(x - q.x, z - q.z) < q.r2 * .85 + pad : Math.hypot(x - q.x, z - q.z) < q.r * .9);
+  const place = (i, x, z, rad) => {
+    const y = H(x, z), a = ROCKS[i % 7], k = rad * 2.1 / Math.max(a.size.x, a.size.z), sy = .7 + r() * .5, sz = .8 + r() * .4;
+    _m.compose(_p.set(x, y - rad * .2, z), _q.setFromAxisAngle(up, r() * TAU), _s.set(k, rad * 1.5 * sy / a.size.y, k * sz));
+    const key = `${i % 7}:${Math.floor(x / CELLR)}:${Math.floor(z / CELLR)}`; if (!batches.has(key)) batches.set(key, { a, list: [], cx: (Math.floor(x / CELLR) + .5) * CELLR, cz: (Math.floor(z / CELLR) + .5) * CELLR });
+    batches.get(key).list.push(_m.clone());
+    if (edgeDist(x, z) > BOUND - 4) addRock({ x, z, r: rad, y });
+  };
+  // scattered boulders, thicker on slopes, and big ones heaped along the foot of the mountains
+  for (let i = 0; i < 2600; i++) {
+    const x = BOUND + r() * (WORLD - 2 * BOUND), z = BOUND + r() * (WORLD - 2 * BOUND), rad = .8 + Math.pow(r(), 2) * 3.4;
+    if (r() > .35 + slope(x, z) * 1.2 || !clearOf(x, z, rad)) continue;
+    place(i, x, z, rad);
   }
-  // colony domes
-  DOMES.forEach((d, i) => buildDome(d, mulberry(300 + i)));
-  RIGS.forEach((d, i) => buildRig(d, mulberry(400 + i)));
+  for (let i = 0; i < 900; i++) {
+    const t = r() * 4, u = r() * (WORLD - 2 * BOUND) + BOUND, inset = BOUND - 10 + r() * 22, side = Math.floor(t);
+    const x = side === 0 ? u : side === 1 ? u : side === 2 ? inset : WORLD - inset, z = side === 0 ? inset : side === 1 ? WORLD - inset : u;
+    if (!clearOf(x, z, 4)) continue;
+    place(i, x, z, 2 + Math.pow(r(), 1.5) * 6);
+  }
+  for (const { a, list, cx, cz } of batches.values()) {
+    let src = null; a.scene.updateMatrixWorld(true); a.scene.traverse(o => { if (o.isMesh && !src) src = o; });
+    const inst = new THREE.InstancedMesh(src.geometry, src.material, list.length);
+    list.forEach((mtx, j) => inst.setMatrixAt(j, mtx.multiply(src.matrixWorld)));
+    inst.castShadow = true; inst.receiveShadow = true; inst.computeBoundingSphere(); scene.add(inst);
+    CULL.push({ o: inst, x: cx, z: cz, r: CELLR * .75 });
+  }
+  // points of interest
+  buildPOIs({ scene, H, M, SHIP, mat: POI_MAT, prop, buildDome, buildRig, mulberry, solid: addSolid, cull: (o, x, z, rr) => CULL.push({ o, x, z, r: rr }),
+    loot: (x, z, kind) => LOOT_SPOTS.push({ x, z, kind }), sleeper: (type, x, z, nest) => SLEEPERS.push({ type, x, z, nest }), vent: (x, y, z, kind) => VENTS.push({ x, y, z, kind }) }, POIS);
   buildCrash(); buildNest(); buildBench();
 
   // sky: stars and the gas giant
@@ -377,7 +402,7 @@ function buildCrash() {
   }
   g.updateMatrixWorld(true);
   // the hull blocks movement and building like a row of boulders
-  for (let k = -7.5; k <= 7.5; k += 2.5) { const p = new THREE.Vector3(k, 0, 0).applyMatrix4(body.matrixWorld); rocks.push({ x: p.x, z: p.z, r: k > 5 ? 1.4 : 2.1, y: p.y }); }
+  for (let k = -7.5; k <= 7.5; k += 2.5) { const p = new THREE.Vector3(k, 0, 0).applyMatrix4(body.matrixWorld); addRock({ x: p.x, z: p.z, r: k > 5 ? 1.4 : 2.1, y: p.y }); }
   const ep = new THREE.Vector3(-.3, 0, 0).applyMatrix4(right.e.matrixWorld);
   fireLight.position.set(ep.x, ep.y + 1, ep.z);
   crashSmokeAt = [ep];
@@ -749,30 +774,40 @@ function clearDynamic() {
 }
 const crateGeo = new THREE.BoxGeometry(.9, .6, .62);
 // loot containers: scrap crates in the open, cabinets in the domes, barrels on the rigs, resin-crusted boxes at the hive
-const CRATE_MODEL = { scrap: ['wooden_military_crate', { fit: 1.1 }], dome: ['utility_box_01', { scale: 1.1 }], rig: ['barrel_01', { scale: 1.15 }] };
+const CRATE_MODEL = {
+  scrap: ['wooden_military_crate', { fit: 1.1 }], dome: ['utility_box_01', { scale: 1.1 }], rig: ['barrel_01', { scale: 1.15 }],
+  town: ['metal_tool_chest', { scale: 1.1 }], cargo: ['old_military_crate', { fit: 1.2 }], relay: ['utility_box_01', { scale: 1.1 }],
+  lab: ['medical_box', { scale: 1.3 }], reactor: ['utility_box_01', { scale: 1.1 }], crater: ['ammo_box', { scale: 1.3 }],
+};
 function newGame() {
   clearDynamic();
   const r = mulberry(17), crates = [];
   const near = (x, z, p, d) => Math.hypot(x - p.x, z - p.z) < d;
-  const free = (x, z) => !rocks.some(k => Math.hypot(x - k.x, z - k.z) < k.r + 1);
+  const free = (x, z) => !rockGrid.query(x - 6, z - 6, x + 6, z + 6, k => Math.hypot(x - k.x, z - k.z) < k.r + 1) && !solidHit(x, z, .5);
   const addCrate = (x, z, kind) => { if (!free(x, z)) return; const y = H(x, z); const cm = CRATE_MODEL[kind], ry = r() * TAU, m = cm ? prop(cm[0], x, y - .03, z, cm[1], scene, ry) : mesh(crateGeo, CRATE_MAT[kind], x, y + .3, z); m.rotation.y = ry; crates.push({ x, z, kind, looted: false, m }); };
-  for (let i = 0; i < 170; i++) { const x = 6 + r() * (WORLD - 12), z = 6 + r() * (WORLD - 12); if (!near(x, z, BASE, 11) && !near(x, z, HIVE, 30)) addCrate(x, z, 'scrap'); }
+  // most loot sits in the points of interest; a thin scatter of scrap crates covers the wilds between them
+  for (const c of LOOT_SPOTS) addCrate(c.x, c.z, c.kind);
+  for (let i = 0; i < 320; i++) {
+    const x = BOUND + r() * (WORLD - 2 * BOUND), z = BOUND + r() * (WORLD - 2 * BOUND);
+    if (slope(x, z) < .5 && !POIS.some(q => Math.hypot(x - q.x, z - q.z) < q.r2)) addCrate(x, z, 'scrap');
+  }
   for (let i = 0; i < 4; i++) { const a = r() * TAU; addCrate(BASE.x + Math.cos(a) * rand(6, 10), BASE.z + Math.sin(a) * rand(6, 10), 'scrap'); }
-  DOMES.forEach(d => { for (let i = 0; i < 5; i++) { const a = r() * TAU, m2 = r() * 6.5; addCrate(d.x + Math.cos(a) * m2, d.z + Math.sin(a) * m2, 'dome'); } });
-  RIGS.forEach(d => { for (let i = 0; i < 4; i++) addCrate(d.x - 4.5 + r() * 3, d.z + 1 + r() * 3.5, 'rig'); });
   for (let i = 0; i < 6; i++) { const a = r() * TAU, m2 = 13 + r() * 10; addCrate(HIVE.x + Math.cos(a) * m2, HIVE.z + Math.sin(a) * m2, 'hive'); }
 
   S = {
     t: 0, day: 1, phase: 'day', phaseT: 0, kills: 0, tier: 1, over: false, won: false, wonAt: 0, shake: 0, muzzle: 0, recoil: 0,
-    player: { x: BASE.x - 3, z: BASE.z + 6, yaw: 2.6, pitch: 0, r: .45, hp: 100, max: 100, spd: 5.2, cool: 0, hurt: 0, bob: 0, moving: false, sprint: false },
+    player: { x: BASE.x - 3, z: BASE.z + 6, y: 0, vy: 0, ground: true, yaw: 2.6, pitch: 0, r: .45, hp: 100, max: 100, spd: 5.2, cool: 0, hurt: 0, bob: 0, moving: false, sprint: false },
     inv: { scrap: 2, metal: 0, cells: 0, chips: 0, cores: 0, med: 0, ammo: 0 },
     weapons: ['pistol'], wi: 0, mags: { pistol: WEAPONS.pistol.mag }, reload: null, draw: 0, gear: {}, research: {}, enemies: [], spits: [], structs: new Map(), crates,
     noise: 0, buildMode: false, buildSel: 0, spawnQueue: [], wanderT: 0, raidT: 30, smokeT: 0, flashOn: true, brood: null, tips: {}, ghost: null, ghostType: null,
   };
-  S.brood = spawn('brood', HIVE.x, HIVE.z, 'sleep'); S.brood.home = true;
-  [[-7, 2.5], [7, 3.5], [0, -7.5], [-3, 8.5]].forEach(([dx, dz]) => { spawn('warden', HIVE.x + dx, HIVE.z + dz, 'sleep').home = true; });
-  [[-13, 7], [12, -8.5], [9, 12]].forEach(([dx, dz]) => { spawn('warrior', HIVE.x + dx, HIVE.z + dz, 'sleep').home = true; });
-  for (let i = 0; i < 8; i++) { const a = i / 8 * TAU; spawn('drone', HIVE.x + Math.cos(a) * 16, HIVE.z + Math.sin(a) * 16, 'sleep').home = true; }
+  S.player.y = H(S.player.x, S.player.z);
+  S.brood = spawn('brood', HIVE.x, HIVE.z, 'sleep'); S.brood.home = true; S.brood.nest = 'hive';
+  [[-7, 2.5], [7, 3.5], [0, -7.5], [-3, 8.5]].forEach(([dx, dz]) => { const e = spawn('warden', HIVE.x + dx, HIVE.z + dz, 'sleep'); e.home = true; e.nest = 'hive'; });
+  [[-13, 7], [12, -8.5], [9, 12]].forEach(([dx, dz]) => { const e = spawn('warrior', HIVE.x + dx, HIVE.z + dz, 'sleep'); e.home = true; e.nest = 'hive'; });
+  for (let i = 0; i < 8; i++) { const a = i / 8 * TAU; const e = spawn('drone', HIVE.x + Math.cos(a) * 16, HIVE.z + Math.sin(a) * 16, 'sleep'); e.home = true; e.nest = 'hive'; }
+  // smaller dormant groups in the brood pockets and the overrun lab
+  for (const q of SLEEPERS) { const e = spawn(q.type, q.x, q.z, 'sleep'); e.home = true; e.nest = q.nest; }
   $('log').innerHTML = '';
   msg('Dropship down. The fleet has jumped. You are alone on Veyra-9.', 'warn');
   msg('Search the wreckage with E, then open the workbench with C.', 'info');
@@ -806,8 +841,20 @@ function structsNear(x, z, r) {
   }
   return out;
 }
-function rockHit(x, z, r) { for (const k of rocks) if (Math.abs(x - k.x) < k.r + r && Math.abs(z - k.z) < k.r + r && Math.hypot(x - k.x, z - k.z) < k.r * .85 + r) return k; return null; }
-function blocked(x, z, r) { return x < 4 || z < 4 || x > WORLD - 4 || z > WORLD - 4 || rockHit(x, z, r) || structsNear(x, z, r).length > 0; }
+function rockHit(x, z, r) { let hit = null; rockGrid.query(x - r - 1, z - r - 1, x + r + 1, z + r + 1, k => { if (Math.hypot(x - k.x, z - k.z) < k.r * .85 + r) { hit = k; return true; } }); return hit; }
+/** Building footprints: an oriented box test, ignored when `y` (feet height) is above the roof. */
+function solidHit(x, z, r, y = -1e9) {
+  let hit = null;
+  solidGrid.query(x - r - 1, z - r - 1, x + r + 1, z + r + 1, q => {
+    if (y > q.top - .05) return;
+    const dx = x - q.x, dz = z - q.z, lx = dx * q.c - dz * q.s, lz = dx * q.s + dz * q.c;
+    if (Math.abs(lx) < q.hw + r && Math.abs(lz) < q.hd + r) { hit = q; return true; }
+  });
+  return hit;
+}
+// the playable area ends where the mountains start; the slopes also get too steep to climb well before it
+const inBounds = (x, z, r) => edgeDist(x, z) > BOUND + r;
+function blocked(x, z, r, y) { return !inBounds(x, z, r) || rockHit(x, z, r) || solidHit(x, z, r, y) || structsNear(x, z, r).length > 0; }
 function moveBody(o, dx, dz, r) {
   let moved = false;
   if (!blocked(o.x + dx, o.z + dz, r)) { o.x += dx; o.z += dz; return true; }
@@ -817,7 +864,46 @@ function moveBody(o, dx, dz, r) {
 }
 function tip(id, text) { if (S.tips[id]) return; S.tips[id] = 1; msg(text, 'info'); }
 const fwd = () => ({ x: -Math.sin(S.player.yaw), z: -Math.cos(S.player.yaw) });
-const eyeY = () => H(S.player.x, S.player.z) + 1.65;
+const eyeY = () => S.player.y + 1.65;
+// ---------- feet: jumping, slopes, the climbable limit ----------
+const GRAV = 8.6, JUMP_V = 4.6, MAX_SLOPE = 1.0;
+/** Ground height under the player, including roofs of buildings they are standing on. */
+function floorAt(x, z, y) { let f = H(x, z); solidGrid.query(x - 1, z - 1, x + 1, z + 1, q => { if (y >= q.top - .4) { const dx = x - q.x, dz = z - q.z, lx = dx * q.c - dz * q.s, lz = dx * q.s + dz * q.c; if (Math.abs(lx) < q.hw && Math.abs(lz) < q.hd) f = Math.max(f, q.top); } }); return f; }
+function movePlayer(p, dx, dz) {
+  // Walking uphill onto ground steeper than MAX_SLOPE (or a step taller than a jump clears) is refused per axis,
+  // so the mountain walls and cliff faces stop you; downhill is always allowed.
+  const ok = (x, z) => {
+    if (blocked(x, z, p.r, p.y)) return false;
+    const h = floorAt(x, z, p.y), rise = h - p.y, run = Math.hypot(x - p.x, z - p.z) || 1e-6;
+    if (p.ground) return rise <= .35 || rise / run <= MAX_SLOPE && slope(x, z) <= MAX_SLOPE + .15;
+    return rise <= .35;
+  };
+  if (ok(p.x + dx, p.z + dz)) { p.x += dx; p.z += dz; return true; }
+  let moved = false;
+  if (dx && ok(p.x + dx, p.z)) { p.x += dx; moved = true; }
+  if (dz && ok(p.x, p.z + dz)) { p.z += dz; moved = true; }
+  return moved;
+}
+function updateFeet(p, dt) {
+  if (keys.has('Space') && p.ground) { p.vy = JUMP_V; p.ground = false; SFX.step(true); }
+  let floor = floorAt(p.x, p.z, p.y);
+  if (!p.ground || p.y > floor + .05) {
+    p.vy -= GRAV * dt; p.y += p.vy * dt; p.ground = false;
+    if (p.y <= floor) { if (p.vy < -7) { S.shake = Math.max(S.shake, .25); SFX.step(true); } p.y = floor; p.vy = 0; p.ground = true; }
+  } else { p.y = floor; p.vy = 0; }
+  // standing on a face steeper than the limit slides you down it
+  if (p.ground && p.y <= H(p.x, p.z) + .05) {
+    const sl = slope(p.x, p.z);
+    if (sl > MAX_SLOPE) {
+      const e = .5, gx = H(p.x + e, p.z) - H(p.x - e, p.z), gz = H(p.x, p.z + e) - H(p.x, p.z - e), gl = Math.hypot(gx, gz) || 1, k = (sl - MAX_SLOPE + .4) * 6 * dt;
+      const nx = p.x - gx / gl * k, nz = p.z - gz / gl * k;
+      if (!blocked(nx, nz, p.r)) { p.x = nx; p.z = nz; p.y = H(nx, nz); }
+    }
+  }
+  // never end up outside the playable ring, whatever pushed you there
+  const e2 = edgeDist(p.x, p.z), lim = BOUND + p.r + .05;
+  if (e2 < lim) { p.x = clamp(p.x, lim, WORLD - lim); p.z = clamp(p.z, lim, WORLD - lim); }
+}
 
 // ---------- input ----------
 function lockMouse() { if (noLock) return; try { const p = cv.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch (e) { noLock = true; } }
@@ -830,10 +916,10 @@ addEventListener('keydown', e => {
   if (!running) return;
   const c = e.code;
   if (['Tab', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(c)) e.preventDefault();
-  if (c === 'KeyP' || (c === 'Escape' && $('craft').hidden && !S.buildMode)) { togglePause(); return; }
+  if (c === 'KeyP' || (c === 'Escape' && $('craft').hidden && $('mapOv').hidden && !S.buildMode)) { togglePause(); return; }
   if (paused || S.over) return;
   keys.add(c);
-  if (c === 'Escape') { if (!$('craft').hidden) toggleCraft(false); else S.buildMode = false; }
+  if (c === 'Escape') { if (!$('mapOv').hidden) toggleMap(false); else if (!$('craft').hidden) toggleCraft(false); else S.buildMode = false; }
   if (c === 'KeyC' || c === 'Tab') toggleCraft();
   if (c === 'KeyE') loot();
   if (c === 'KeyF') S.flashOn = !S.flashOn;
@@ -842,7 +928,8 @@ addEventListener('keydown', e => {
   if (c === 'KeyQ') { selectWeapon(S.wi + 1); S.buildMode = false; }
   if (c === 'KeyR' && !S.buildMode) startReload();
   if (c === 'KeyH') useMed();
-  if (c === 'KeyM') toast(SFX.toggleMute() ? 'Sound off' : 'Sound on');
+  if (c === 'KeyK') toast(SFX.toggleMute() ? 'Sound off' : 'Sound on');
+  if (c === 'KeyM') toggleMap();
   if (c === 'KeyG') { quality = quality === 'high' ? 'low' : 'high'; try { localStorage.setItem('sc.quality', quality); } catch (_) { /* storage blocked */ } post.setQuality(quality); resize(); toast(quality === 'high' ? 'Graphics: high' : 'Graphics: low (faster)'); }
 });
 addEventListener('keyup', e => keys.delete(e.code));
@@ -877,6 +964,12 @@ function loot() {
   if (c.kind === 'dome') { add('scrap', rint(0, 2)); add('metal', rint(1, 2)); if (chance(.7)) add('cells', 1); }
   if (c.kind === 'rig') { add('metal', rint(1, 3)); if (chance(.55)) add('chips', 1); if (chance(.25)) add('cells', 1); }
   if (c.kind === 'hive') { add('chips', rint(1, 2)); add('cells', 1); }
+  if (c.kind === 'town') { add('scrap', rint(1, 2)); if (chance(.5)) add('metal', 1); if (chance(.3)) add('med', 1); if (chance(.25)) add('ammo', rint(10, 25)); }
+  if (c.kind === 'cargo') { add('metal', rint(1, 3)); if (chance(.4)) add('ammo', rint(15, 40)); if (chance(.2)) add('cells', 1); }
+  if (c.kind === 'relay') { add('chips', rint(1, 2)); if (chance(.6)) add('cells', 1); }
+  if (c.kind === 'lab') { add('med', rint(1, 2)); if (chance(.6)) add('chips', 1); if (chance(.35)) add('cores', 1); }
+  if (c.kind === 'reactor') { add('cells', rint(1, 2)); if (chance(.5)) add('metal', rint(1, 2)); }
+  if (c.kind === 'crater') { add('scrap', rint(1, 2)); if (chance(.5)) add('ammo', rint(10, 30)); if (chance(.3)) add('cores', 1); }
   const parts = Object.entries(g).map(([k, v]) => `+${v} ${k}`);
   for (const [k, v] of Object.entries(g)) S.inv[k] += v;
   toast(parts.length ? parts.join('   ') : 'Empty'); SFX.loot();
@@ -921,6 +1014,46 @@ function destroyStruct(s, loud) {
 const atBench = () => d2(S.player, BENCH) < 7;
 
 // ---------- crafting panel ----------
+// ---------- map screen ----------
+// Hillshaded once from the heightfield, then markers are redrawn each frame while it is open.
+let mapBase = null;
+const MAP_ICON = { town: '■', dome: '◯', rig: '⛏', port: '✈', relay: '⌁', lab: '✚', reactor: '♨', wreck: '✖', pocket: '☣', crater: '◎', lake: '≈', hive: '☣', crash: '★' };
+function bakeMap() {
+  const N = 580, k = WORLD / N, c = document.createElement('canvas'); c.width = c.height = N; const g = c.getContext('2d'), img = g.createImageData(N, N);
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const x = (i + .5) * k, z = (j + .5) * k, h = H(x, z), sx = H(x + k, z) - H(x - k, z), sz = H(x, z + k) - H(x, z - k);
+    const shade = clamp(.62 - (sx * .7 + sz * .5) / (2 * k) * .55, .15, 1), sl = slope(x, z), snow = clamp((h - 14) / 30, 0, 1) * (1 - clamp((sl - .5) * 2, 0, 1));
+    let r = lerp(58, 150, snow), gg = lerp(66, 162, snow), b = lerp(70, 172, snow);
+    if (edgeDist(x, z) < BOUND) { r *= .55; gg *= .55; b *= .6; }
+    const o = (j * N + i) * 4; img.data[o] = r * shade * 1.5; img.data[o + 1] = gg * shade * 1.5; img.data[o + 2] = b * shade * 1.5; img.data[o + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  const lake = poi('lake'); g.fillStyle = 'rgba(140,190,215,.55)'; g.beginPath(); g.arc(lake.x / k, lake.z / k, lake.r / k * .85, 0, TAU); g.fill();
+  return c;
+}
+function drawMap() {
+  const cv2 = $('mapCv'), g = cv2.getContext('2d'), W = cv2.width, k = W / WORLD, p = S.player;
+  if (!mapBase) mapBase = bakeMap();
+  g.imageSmoothingEnabled = true; g.drawImage(mapBase, 0, 0, W, W);
+  // 100 m grid and the edge of the playable ground
+  g.strokeStyle = 'rgba(220,230,225,.08)'; g.lineWidth = 1;
+  for (let v = 0; v <= WORLD; v += 100) { g.beginPath(); g.moveTo(v * k, 0); g.lineTo(v * k, W); g.moveTo(0, v * k); g.lineTo(W, v * k); g.stroke(); }
+  g.strokeStyle = 'rgba(220,90,80,.5)'; g.setLineDash([10, 8]); g.lineWidth = 2; g.strokeRect(BOUND * k, BOUND * k, (WORLD - 2 * BOUND) * k, (WORLD - 2 * BOUND) * k); g.setLineDash([]);
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  for (const q of POIS) {
+    const x = q.x * k, z = q.z * k, hostile = q.kind === 'hive' || q.kind === 'pocket', home = q.kind === 'crash';
+    g.fillStyle = hostile ? '#e0675c' : home ? '#f0b13c' : '#cfe2ea';
+    g.font = `${q.kind === 'dome' || q.kind === 'rig' ? 22 : 28}px "Share Tech Mono", monospace`; g.fillText(MAP_ICON[q.kind] || '•', x, z);
+    if (q.kind === 'dome' || q.kind === 'rig') continue;
+    g.font = '700 25px "Saira Condensed", sans-serif'; g.lineWidth = 4; g.strokeStyle = 'rgba(5,8,9,.85)';
+    g.strokeText(q.name, x, z + 26); g.fillText(q.name, x, z + 26);
+  }
+  // you
+  g.save(); g.translate(p.x * k, p.z * k); g.rotate(-p.yaw); g.fillStyle = '#f0b13c'; g.strokeStyle = '#000'; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(0, -16); g.lineTo(10, 12); g.lineTo(0, 6); g.lineTo(-10, 12); g.closePath(); g.fill(); g.stroke(); g.restore();
+  g.font = '18px "Share Tech Mono", monospace'; g.fillStyle = '#d9e4dd'; g.textAlign = 'left'; g.fillText('100 m grid · N up', 14, W - 18);
+}
+function toggleMap(force) { const el = $('mapOv'), open = force ?? el.hidden; el.hidden = !open; if (open) drawMap(); }
 function toggleCraft(force) {
   const el = $('craft'), open = force ?? el.hidden;
   el.hidden = !open;
@@ -996,12 +1129,15 @@ function spawnAround(type) {
   const p = S.player, toHive = Math.atan2(HIVE.z - p.z, HIVE.x - p.x);
   for (let tries = 0; tries < 20; tries++) {
     const a = chance(.6) ? toHive + rand(-1.1, 1.1) : rand(0, TAU), d = rand(42, 58);
-    const x = clamp(p.x + Math.cos(a) * d, 6, WORLD - 6), z = clamp(p.z + Math.sin(a) * d, 6, WORLD - 6);
+    const x = clamp(p.x + Math.cos(a) * d, BOUND + 2, WORLD - BOUND - 2), z = clamp(p.z + Math.sin(a) * d, BOUND + 2, WORLD - BOUND - 2);
     if (!blocked(x, z, ED[type].r)) return spawn(type, x, z);
   }
 }
 
 // ---------- update ----------
+// distant buildings and rock cells drop out past the fog
+const CULL_D = 470;
+function cullWorld() { const p = S.player; for (const c of CULL) c.o.visible = Math.hypot(c.x - p.x, c.z - p.z) < CULL_D + c.r; }
 function update(dt) {
   S.t += dt; S.phaseT += dt;
   if (S.phase === 'day' && S.phaseT >= DAY) startNight();
@@ -1025,8 +1161,9 @@ function update(dt) {
   const f = fwd(), rt = { x: -f.z, z: f.x };
   let vx = f.x * mz + rt.x * mx, vz = f.z * mz + rt.z * mx; const l = Math.hypot(vx, vz);
   p.sprint = keys.has('ShiftLeft') || keys.has('ShiftRight');
-  const spd = p.spd * (p.sprint && mz > 0 ? 1.55 : 1);
-  if (l > 0) { vx /= l; vz /= l; moveBody(p, vx * spd * dt, vz * spd * dt, p.r); p.bob += dt * spd * 1.6; p.moving = true; S.stepD = (S.stepD || 0) + spd * dt; if (S.stepD > (p.sprint ? 2.1 : 1.6)) { S.stepD = 0; SFX.step(p.sprint); } if (p.sprint) S.noise = Math.min(100, S.noise + 6 * dt); } else p.moving = false;
+  const spd = p.spd * (p.sprint && mz > 0 ? 1.55 : 1) * (p.ground ? 1 : .85);
+  if (l > 0) { vx /= l; vz /= l; movePlayer(p, vx * spd * dt, vz * spd * dt); p.bob += dt * spd * 1.6; p.moving = true; S.stepD = (S.stepD || 0) + spd * dt; if (S.stepD > (p.sprint ? 2.1 : 1.6)) { S.stepD = 0; SFX.step(p.sprint); } if (p.sprint) S.noise = Math.min(100, S.noise + 6 * dt); } else p.moving = false;
+  updateFeet(p, dt);
   p.cool -= dt; p.hurt = Math.max(0, p.hurt - dt);
   S.draw = Math.max(0, S.draw - dt); if (S.reload && (S.reload.t -= dt) <= 0) finishReload();
   if (mouse.down && !S.buildMode && $('craft').hidden) fire();
@@ -1049,6 +1186,11 @@ function update(dt) {
   updateEnemies(dt);
   updateSpits(dt);
   S.smokeT -= dt; if (S.smokeT <= 0 && crashSmokeAt[0]) { S.smokeT = .25; const q = crashSmokeAt[0]; fx('smoke', q.x + rand(-.5, .5), q.y + 1, q.z + rand(-.5, .5), { vy: rand(1, 1.8) }); if (chance(.5)) fx('flame', q.x + rand(-.4, .4), q.y + .2, q.z + rand(-.4, .4), { vy: 1.2, s: .7 }); }
+  // steam stacks at the geothermal plant, fires in the hauler wreck (only when you are close enough to see them)
+  S.ventT = (S.ventT || 0) - dt;
+  if (S.ventT <= 0) { S.ventT = .3; for (const v of VENTS) { if (d2(v, p) > 220) continue; if (v.kind === 'steam') fx('smoke', v.x + rand(-1, 1), v.y, v.z + rand(-1, 1), { vy: rand(2.5, 4), s: 1.6, c: '#c9ced2', t: 6 }); else { fx('smoke', v.x + rand(-.5, .5), v.y + .8, v.z + rand(-.5, .5), { vy: rand(1, 1.8) }); fx('flame', v.x + rand(-.4, .4), v.y, v.z + rand(-.4, .4), { vy: 1.2, s: .8 }); } } }
+  cullWorld();
+  if (!$('mapOv').hidden) drawMap();
   for (const d of decals) { if (d.t > 0) { d.t -= dt; d.m.material.opacity = clamp(d.t / 20, 0, .75); } }
   S.shake = Math.max(0, S.shake - dt * 2.5);
   S.recoil = Math.max(0, S.recoil - dt * 6);
@@ -1067,11 +1209,14 @@ function rayCast(o, d, maxD) {
     const dd = lx * lx + ly * ly + lz * lz - tca * tca; if (dd > R * R) continue;
     const t = tca - Math.sqrt(R * R - dd); if (t < bt) { bt = t; best = e; }
   }
-  for (const k of rocks) {
-    const lx = k.x - o.x, ly = k.y + k.r * .2 - o.y, lz = k.z - o.z, tca = lx * d.x + ly * d.y + lz * d.z; if (tca < 0 || tca - k.r > bt) continue;
-    const dd = lx * lx + ly * ly + lz * lz - tca * tca, R = k.r * .85; if (dd > R * R) continue;
+  const ex = o.x + d.x * bt, ez = o.z + d.z * bt;
+  rockGrid.query(Math.min(o.x, ex) - 8, Math.min(o.z, ez) - 8, Math.max(o.x, ex) + 8, Math.max(o.z, ez) + 8, k => {
+    const lx = k.x - o.x, ly = k.y + k.r * .2 - o.y, lz = k.z - o.z, tca = lx * d.x + ly * d.y + lz * d.z; if (tca < 0 || tca - k.r > bt) return;
+    const dd = lx * lx + ly * ly + lz * lz - tca * tca, R = k.r * .85; if (dd > R * R) return;
     const t = tca - Math.sqrt(R * R - dd); if (t < bt) { bt = t; best = null; }
-  }
+  });
+  // building walls stop rounds too (stepped test along the ray against footprints)
+  for (let t = .3; t < bt; t += .4) { const x = o.x + d.x * t, z = o.z + d.z * t, y = o.y + d.y * t; const q = solidHit(x, z, 0); if (q && y < q.top) { bt = t; best = null; break; } }
   for (let t = .5; t < bt; t += .6) { const x = o.x + d.x * t, z = o.z + d.z * t; if (o.y + d.y * t < H(x, z)) { bt = t; best = null; break; } }
   return { e: best, t: bt };
 }
@@ -1128,13 +1273,14 @@ function hurtEnemy(e, dmg, ignoreArmor) {
   if (e.hp <= 0) return;
   const d = ignoreArmor ? dmg : Math.max(1, dmg - ED[e.type].armor);
   e.hp -= d; e.flash = .06;
-  if (e.state === 'sleep') wakeNest();
+  if (e.state === 'sleep') wakeNest(e.nest);
   if (e.hp <= 0) killEnemy(e);
 }
-function wakeNest() {
+function wakeNest(nest = 'hive') {
   let woke = false;
-  for (const e of S.enemies) if (e.state === 'sleep') { if (e.type === 'brood' && d2(e, S.player) > 34) continue; e.state = 'hunt'; woke = true; }
-  if (woke) { tip('nest', 'The nest is awake.'); SFX.roar(HIVE.x, HIVE.z); }
+  for (const e of S.enemies) if (e.state === 'sleep' && (e.nest ?? 'hive') === nest) { if (e.type === 'brood' && d2(e, S.player) > 34) continue; e.state = 'hunt'; woke = true; }
+  const at = nest === 'hive' ? HIVE : poi(nest);
+  if (woke) { tip('nest' + nest, nest === 'hive' ? 'The nest is awake.' : 'Something was sleeping here. Not any more.'); SFX.roar(at.x, at.z); }
 }
 function killEnemy(e) {
   const s = ED[e.type].r, y = H(e.x, e.z);
@@ -1167,7 +1313,7 @@ function updateEnemies(dt) {
       e.skT = (e.skT ?? 0) - dt; if (e.skT <= 0) { e.skT = .35; SFX.skitter(e.x, e.z); }
     }
     e.m.mat.emissive.setScalar(e.flash > 0 ? .6 : 0);
-    if (e.state === 'sleep') { e.anim += dt * .4; if (d2(e, p) < 26) wakeNest(); if (near) animSkarn(e); continue; }
+    if (e.state === 'sleep') { e.anim += dt * .4; if (d2(e, p) < (e.nest === 'hive' ? 26 : 16)) wakeNest(e.nest); if (near) animSkarn(e); continue; }
     let tx = p.x, tz = p.z, spd = d.spd;
     if (e.state === 'flee') { tx = HIVE.x; tz = HIVE.z; spd *= 1.2; if (d2(e, p) > 60) { e.gone = true; scene.remove(g); continue; } }
     else {
@@ -1256,7 +1402,7 @@ function environment(dt) {
   const p = S.player, dk = darkness(), day = 1 - dk, left = DAY - S.phaseT;
   const duskK = S.phase === 'day' ? clamp(1 - left / 22, 0, 1) * (1 - dk) : 0;
   _c.copy(C_DAY).lerp(C_DUSK, duskK * .8).lerp(C_NIGHT, dk);
-  scene.fog.density = lerp(.013, .03, dk);
+  scene.fog.density = lerp(.0058, .028, dk);
   const sa = S.phase === 'day' ? (S.phaseT / DAY) * Math.PI * .9 + .15 : Math.PI;
   sun.position.set(p.x + Math.cos(sa) * 90, Math.max(8, Math.sin(sa) * 110), p.z - 50); sun.target.position.set(p.x, 0, p.z);
   sun.intensity = 1.7 * day * LUX; sun.color.set(col('#fff1dc')).lerp(col('#ffa060'), duskK);
@@ -1341,14 +1487,21 @@ function drawCompass() {
   for (let i = 0; i < 24; i++) { const b = i / 24 * TAU, x = X(b); if (x === null) continue; const card = ['N', 'E', 'S', 'W'][i / 6]; cctx.fillStyle = card ? '#d9e4dd' : 'rgba(217,228,221,.4)'; if (card && i % 6 === 0) cctx.fillText(card, x, 36); else cctx.fillRect(x - 1, 12, 2, 14); }
   const bx = X(Math.atan2(BENCH.x - p.x, -(BENCH.z - p.z))), bd = d2(p, BENCH);
   if (bx !== null && bd > 8) { cctx.fillStyle = '#f0b13c'; cctx.beginPath(); cctx.moveTo(bx, 50); cctx.lineTo(bx - 8, 40); cctx.lineTo(bx + 8, 40); cctx.fill(); cctx.font = '18px "Share Tech Mono", monospace'; cctx.fillText(`BASE ${Math.round(bd)}m`, bx, 22); }
+  // nearby points of interest show as small ticks with their distance
+  cctx.font = '15px "Share Tech Mono", monospace';
+  for (const q of POIS) {
+    if (q.kind === 'crash') continue; const qd = d2(p, q); if (qd > 260 || qd < q.r2 * .6) continue;
+    const qx = X(Math.atan2(q.x - p.x, -(q.z - p.z))); if (qx === null) continue;
+    cctx.fillStyle = q.kind === 'hive' || q.kind === 'pocket' ? 'rgba(220,90,80,.85)' : 'rgba(150,200,215,.75)';
+    cctx.fillRect(qx - 1.5, 40, 3, 8); cctx.fillText(`${Math.round(qd)}`, qx, 62);
+  }
   cctx.fillStyle = 'rgba(240,177,60,.9)'; cctx.fillRect(W / 2 - 1, 0, 2, 8);
 }
 function location() {
   const p = S.player;
   if (d2(p, BASE) < 30) return 'CRASH SITE';
   if (d2(p, HIVE) < 45) return 'SKARN NEST';
-  for (const d of DOMES) if (d2(p, d) < 16) return d.n;
-  for (const d of RIGS) if (d2(p, d) < 13) return 'MINING RIG';
+  for (const q of POIS) if (q.kind !== 'crash' && q.kind !== 'hive' && d2(p, q) < q.r2 * .8) return q.name;
   return '';
 }
 let hudT = 0;
@@ -1417,4 +1570,4 @@ $('btnStart').disabled = false; $('btnStart').textContent = 'Deploy';
 requestAnimationFrame(frame);
 
 // Dev-only handle for automated playtests (stripped from production builds).
-if (import.meta.env.DEV) Object.assign(window, { __S: () => S, __post: post, __api: { renderer, scene, MODELS, VMS, placeModel, buildStruct, togglePause, selectWeapon, startReload, fire, H, DOMES, RIGS, BASE, BENCH, loot, craftItem, startNight, hurtEnemy, spawn, placeStruct, camera, SFX } });
+if (import.meta.env.DEV) Object.assign(window, { __S: () => S, __post: post, __api: { renderer, scene, MODELS, VMS, placeModel, buildStruct, togglePause, selectWeapon, startReload, fire, H, slope, POIS, DOMES, RIGS, BASE, BENCH, solids, CULL, wakeNest, toggleMap, movePlayer, updateFeet, keys, cullWorld, LOOT_SPOTS, loot, craftItem, startNight, hurtEnemy, spawn, placeStruct, camera, SFX } });

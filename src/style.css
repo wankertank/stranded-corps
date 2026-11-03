@@ -76,3 +76,9 @@ body{background:var(--void);color:var(--ink);font-family:var(--font-m);overflow:
 #loadErr{color:var(--alert)}
 @media (max-width:620px){#tr{grid-template-columns:repeat(5,auto);column-gap:8px;top:auto;bottom:calc(178px + env(safe-area-inset-bottom,0px))}}
 @media (prefers-reduced-motion:reduce){#flash,#log div{transition:none}}
+#mapOv{position:absolute;inset:0;display:grid;place-items:center;background:rgba(3,5,6,.55);pointer-events:none;padding:16px}
+#mapOv .mapSheet{width:min(calc(100vh - 90px),calc(100vw - 32px),920px);background:#0d1213;border:1px solid var(--line);padding:14px;display:grid;gap:10px}
+#mapOv .row{flex-wrap:nowrap;gap:12px;white-space:nowrap}
+#mapOv .row .lbl{overflow:hidden;text-overflow:ellipsis}
+#mapOv h2{font-family:var(--font-d);font-size:clamp(16px,2.4vh,24px);font-weight:800;letter-spacing:.05em;margin:0;text-transform:uppercase}
+#mapCv{width:100%;aspect-ratio:1;height:auto;display:block;border:1px solid var(--line)}
