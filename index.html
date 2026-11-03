@@ -43,6 +43,13 @@
   <div id="log"></div>
   <div id="hint"></div>
 
+  <div id="mapOv" hidden>
+    <div class="mapSheet" role="dialog" aria-label="Map of the Veyra-9 landing zone">
+      <div class="row"><h2>Veyra-9 · Haldane Basin</h2><span class="lbl">M or Esc to close · the world keeps moving</span></div>
+      <canvas id="mapCv" width="1160" height="1160"></canvas>
+    </div>
+  </div>
+
   <div id="craft" hidden>
     <div class="sheet" role="dialog" aria-label="Workbench">
       <div class="row"><h2>Workbench</h2><span class="lbl">C or Esc to close</span></div>
@@ -58,18 +65,18 @@
       <div class="eyebrow">Frontier Expeditionary Corps · Veyra-9 · Field build</div>
       <h1>Stranded Corps</h1>
       <p>Your dropship went down covering the Haldane Colony evacuation. The fleet jumped without you. The Skarn hive far to the northeast heard the crash, and when night falls they will come for the noise and the light.</p>
-      <p>Salvage is thin. Range out to the colony domes and mining rigs, get back to the workbench before dark, and tech up. On night 7 the Broodmother leaves her nest. Kill her to win.</p>
+      <p>Salvage is thin. The basin is about a kilometre across: range out to the colony, the domes, the rigs and the landing field, get back to the workbench before dark, and tech up. Press M for the map. On night 7 the Broodmother leaves her nest. Kill her to win.</p>
       <div class="keys">
-        <span><kbd>WASD</kbd>Move</span><span><kbd>Shift</kbd>Sprint (loud)</span>
+        <span><kbd>WASD</kbd>Move</span><span><kbd>Shift</kbd>Sprint (loud)</span><span><kbd>Space</kbd>Jump</span><span><kbd>M</kbd>Map</span>
         <span><kbd>Mouse</kbd>Look and fire</span><span><kbd>E</kbd>Search crates</span>
         <span><kbd>C</kbd>Workbench</span><span><kbd>B</kbd>Build mode</span>
         <span><kbd>1-4</kbd>Pick structure</span><span><kbd>R-click</kbd>Remove structure</span>
         <span><kbd>Q</kbd>Switch weapon</span><span><kbd>R</kbd>Reload</span><span><kbd>H</kbd>Use medkit</span>
-        <span><kbd>F</kbd>Flashlight</span><span><kbd>M</kbd>Mute sound</span><span><kbd>G</kbd>Graphics quality</span><span><kbd>Esc</kbd>Pause</span>
+        <span><kbd>F</kbd>Flashlight</span><span><kbd>K</kbd>Mute sound</span><span><kbd>G</kbd>Graphics quality</span><span><kbd>Esc</kbd>Pause</span>
       </div>
       <button class="btn" id="btnStart" disabled>Loading</button>
       <p class="lbl" id="loadErr"></p>
-      <p class="lbl">Desktop with keyboard and mouse. Click Deploy to lock the mouse. Days are 90 seconds, nights 70.</p>
+      <p class="lbl">Desktop with keyboard and mouse. Click Deploy to lock the mouse. Days are 3½ minutes, nights 70 seconds.</p>
     </div>
   </div>
 

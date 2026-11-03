@@ -12,12 +12,13 @@ npm run dev      # http://localhost:5173
 npm run build    # typecheck and production build into dist/
 ```
 
-Desktop browser with keyboard and mouse. Click Deploy to lock the mouse.
+Desktop browser with keyboard and mouse. Click Deploy to lock the mouse. Space jumps, M opens the map, K mutes.
 
 ## Layout
 
 - `index.html` holds the HUD and menu markup, `src/style.css` the HUD styles.
 - `src/main.ts` is the entry point.
+- `src/world/` holds the map: `terrain.ts` (the 1.16 km heightfield, the mountain ring and the points of interest list) and `spatial.ts` (bucket grid for collision queries). `src/legacy/pois.js` builds each point of interest.
 - `src/render/` holds the typed rendering modules: `postfx.ts` (ambient occlusion, bloom, lens pass), `materials.ts` (texture loading, triplanar PBR, terrain blend, HDRI lighting), `tonemap.ts` (keeps fog, sky and decals looking as tuned under post-processing).
 - `src/legacy/game.js` is the first-person prototype, ported as one ES module on the current Three.js. It gets split into typed modules as each system is rebuilt.
 - `public/textures`, `public/hdri` and `public/models` hold CC0 art; see `CREDITS.md`. Models are packed with `gltf-transform optimize --compress meshopt --texture-compress webp`.
@@ -33,5 +34,6 @@ Press G in game to switch between high and low graphics (low drops ambient occlu
 5. Feel: magazines and reloading (12-round sidearm, 99-round pulse rifle with its counter, 100-unit flamer tank, 500-round smart gun drum), procedural weapon animation (draw, reload, slide and bolt, sprint and sway), layered synthesized gun, reload and Skarn sounds. Done. Still open: hit reactions, camera effects, recorded audio.
 6. First-person hands and gun models, built in code (`src/render/viewmodels.ts`): gloved, jointed hands and sleeved forearms posed on every weapon, with the support hand fetching magazines and racking the bolt during reloads; side-profile pulse rifle, incinerator and smart gun with vented shrouds, rails, screws, stencils, a fuel gauge and a reticle display; object-space triplanar finishes (worn paint, parkerized steel, stippled polymer, leather, twill). Done.
 7. Sci-fi M-6 sidearm built in code (angular ported slide with a round counter facing the shooter, glowing status strips, compensator) held two-handed; bloom-bright muzzle flashes fixed to every gun's muzzle with a correctly placed muzzle light. Done.
+8. Bigger world: a 1.16 km heightfield basin (about 1 km playable) ringed by mountains you can't climb (slope limit, sliding, and a hard boundary at the mountain foot), jumping, and points of interest: Haldane Colony, Kessler Landing Field, Relay Station K-7 on its hill, the xenobiology lab, the geothermal plant, a hauler wreck, an impact crater, a frozen lake, brood pockets, six domes and six rigs. Loot is concentrated in them, smaller Skarn nests sleep in the pockets and the lab, and M shows a map. Rocks are instanced and distant cells are culled. Done.
 
 Art stays free: CC0 packs and AI-generated models only. Credit each pack in `CREDITS.md` as it is added.
