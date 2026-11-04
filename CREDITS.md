@@ -27,3 +27,10 @@ Models, 512px or 1k textures, packed as meshopt + WebP GLB in `public/models`.
 | Rig loot barrel, scattered barrels | `barrel_01.glb` | [Barrel 01](https://polyhaven.com/a/Barrel_01) |
 | Barricade | `concrete_road_barrier.glb` | [Concrete Road Barrier](https://polyhaven.com/a/concrete_road_barrier) |
 | Props at the crash, domes, rigs and bench | `old_military_crate.glb`, `metal_tool_chest.glb`, `portable_generator.glb`, `ammo_box.glb`, `metal_jerrycan.glb`, `propane_tank.glb`, `medical_box.glb` | [Old Military Crate](https://polyhaven.com/a/old_military_crate), [Metal Tool Chest](https://polyhaven.com/a/metal_tool_chest), [Portable Generator](https://polyhaven.com/a/portable_generator), [Ammo Box](https://polyhaven.com/a/ammo_box), [Metal Jerrycan](https://polyhaven.com/a/metal_jerrycan), [Propane Tank](https://polyhaven.com/a/propane_tank), [Medical Box](https://polyhaven.com/a/medical_box) |
+
+## Libraries
+
+| Use | Library | License |
+|---|---|---|
+| Post-processing pipeline (bloom, tone mapping, SMAA, effect merging) | [pmndrs/postprocessing](https://github.com/pmndrs/postprocessing) by Raoul van Rüschen | Zlib |
+| Ambient occlusion | [N8AO](https://github.com/N8python/n8ao) by N8python | CC0 / ISC |
