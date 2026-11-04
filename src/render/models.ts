@@ -3,7 +3,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 
 /**
- * CC0 photoscanned models from Poly Haven (see CREDITS.md), packed as meshopt + WebP GLBs.
+ * CC0 photoscanned models from Poly Haven and AI-generated creatures (see CREDITS.md), packed as meshopt + WebP GLBs.
  * Each one is re-centred so its footprint sits on the origin, with `size` holding its real
  * dimensions in metres, so callers can place and scale it like the old primitive boxes.
  */
@@ -18,6 +18,8 @@ export const MODEL_NAMES = [
   'moon_rock_01', 'moon_rock_02', 'moon_rock_03', 'moon_rock_04', 'moon_rock_05', 'moon_rock_06', 'moon_rock_07',
   'wooden_military_crate', 'old_military_crate', 'utility_box_01', 'metal_tool_chest', 'barrel_01', 'concrete_road_barrier',
   'ammo_box', 'metal_jerrycan', 'propane_tank', 'portable_generator', 'medical_box',
+  // AI-generated (Meshy), rigged in code by render/rigged.ts
+  'skarn_drone',
 ] as const;
 export type ModelName = (typeof MODEL_NAMES)[number];
 

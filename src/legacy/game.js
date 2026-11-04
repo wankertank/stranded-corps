@@ -9,6 +9,7 @@ import { weaponMaterials, buildViewmodels as buildGunViewmodels } from '../rende
 import { WORLD, BOUND, GRID_N, POIS, poi, H, slope, edgeDist, buildTerrain, fbm, NZ } from '../world/terrain';
 import { Buckets } from '../world/spatial';
 import { buildPOIs } from './pois';
+import { buildRigTemplate, instanceRig, animateRig } from '../render/rigged';
 
 usePerceptualFog();
 
@@ -489,7 +490,16 @@ function seg(m, ax, ay, az, bx, by, bz, th) {
 }
 const SKIN = skinSet();
 M.teeth = new THREE.MeshStandardMaterial({ color: col('#9a968c'), roughness: .3, metalness: .5 });
+// Skarn types with a generated model use it, rigged and animated in code; the rest stay sculpted.
+let RIGS_SKARN = null;
+function skarnRig(type) {
+  if (!RIGS_SKARN) RIGS_SKARN = { drone: buildRigTemplate(MODELS.skarn_drone, { height: 1.4 }) };
+  return RIGS_SKARN[type];
+}
 function buildSkarn(type) {
+  const T = skarnRig(type);
+  // the generated hide is glossy metal-ish; under the snowfield HDRI it read as chrome, so damp the reflections
+  if (T) { const R = instanceRig(T); R.mat.emissive = new THREE.Color(0); R.mat.envMapIntensity = .3; R.mat.color.setScalar(.75); return { g: R.g, mat: R.mat, tail: [], legs: [], rig: R.rig, R }; }
   const d = ED[type], s = d.r, G = skarnGeometry(type, s), g = new THREE.Group(); g.rotation.order = 'YXZ';
   // wet black hide: ribbed and veined by the triplanar skin set, with a clearcoat sheen over it
   const mat = triplanar(new THREE.MeshPhysicalMaterial({ color: col(d.col).multiplyScalar(1.6), roughness: .5, metalness: .25, clearcoat: 1, clearcoatRoughness: .35, emissive: new THREE.Color(0) }), SKIN, { scale: 2.4 / s, normalStrength: 1.2, ao: .7 });
@@ -521,6 +531,13 @@ function buildSkarn(type) {
   return out;
 }
 function animSkarn(e) {
+  if (e.m.R) {
+    const moved = Math.hypot(e.x - (e.px ?? e.x), e.z - (e.pz ?? e.z)); e.px = e.x; e.pz = e.z;
+    e.mvK = lerp(e.mvK ?? 0, moved > .002 && !e.dying ? 1 : 0, .15);
+    const atk = e.atk > 0 ? Math.sin((1 - e.atk / .25) * Math.PI) : 0;
+    animateRig(e.m.R, { t: e.anim, moving: e.mvK, attack: atk, sleep: e.state === 'sleep', dead: e.dying > 0 ? 1 : 0, turn: 0 });
+    return;
+  }
   const m = e.m, d = ED[e.type], s = d.r, t = e.anim, dead = e.dying > 0;
   const n = m.tail.length, tl = e.type === 'crawler' ? s * 3.2 : s * 2.8;
   let lx = 0, ly = 0, lz = 0;
