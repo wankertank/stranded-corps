@@ -19,7 +19,7 @@ export const MODEL_NAMES = [
   'wooden_military_crate', 'old_military_crate', 'utility_box_01', 'metal_tool_chest', 'barrel_01', 'concrete_road_barrier',
   'ammo_box', 'metal_jerrycan', 'propane_tank', 'portable_generator', 'medical_box',
   // AI-generated (Meshy), rigged in code by render/rigged.ts
-  'skarn_drone',
+  'skarn_drone', 'vm_pistol', 'vm_pistol_mag', 'vm_rifle', 'vm_rifle_mag',
 ] as const;
 export type ModelName = (typeof MODEL_NAMES)[number];
 

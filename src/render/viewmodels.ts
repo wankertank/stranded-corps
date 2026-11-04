@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { dressGun, type GunArt } from './gunArt';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { triplanar, type PBRSet } from './materials';
 import { latheX } from './shapes';
@@ -437,8 +438,9 @@ function gaugeDisplay() {
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 }
 
-export function buildViewmodels(m: WeaponMaterials): Record<string, Viewmodel> {
-  return { pistol: pistol(m), pulse: pulseRifle(m), flamer: flamer(m), smart: smartGun(m) };
+/** `art` swaps a gun's code-built body for a generated model (see gunArt.ts); hands and animation stay. */
+export function buildViewmodels(m: WeaponMaterials, art: { pistol?: GunArt; pulse?: GunArt } = {}): Record<string, Viewmodel> {
+  return { pistol: pistol(m, art.pistol), pulse: pulseRifle(m, art.pulse), flamer: flamer(m), smart: smartGun(m) };
 }
 
 // ---------- muzzle flash ----------
@@ -504,7 +506,7 @@ class MuzzleFlash {
 }
 
 // ----- M-6 sidearm: an angular sci-fi service pistol -----
-function pistol(m: WeaponMaterials): Viewmodel {
+function pistol(m: WeaponMaterials, art?: GunArt): Viewmodel {
   const g = new THREE.Group(), b = bodyOf(g, 1.25); b.position.set(-.09, .03, .02); b.rotation.y += .2; // angled in toward the crosshair, showing its right flank
   const k = new Kit();
   // polymer frame with an accessory rail and a squared trigger guard
@@ -545,6 +547,8 @@ function pistol(m: WeaponMaterials): Viewmodel {
   const mag = part(b, -.045, -.016, 0); mag.rotation.z = -.25;
   new Kit().add(m.steel, rbox(.036, .09, .022, .003), -.012, -.05, 0).add(m.polymer, side([[-.032, 0], [.014, 0], [.016, .008], [-.034, .008]], .03, .003, .002), 0, -.104, 0)
     .add(m.brass, cylX(.0045, -.024, .0, 8), 0, -.003, 0).into(mag);
+  // grip bottom and muzzle of the code pistol, for fitting a generated model over it
+  if (art) dressGun(b, slide, mag, art, { grip: [-.0847, -.1029], muzzle: [.163, .02], flip: true, gripRange: [0, .6], slideAbove: .004, magFit: { top: -.004, bottom: -.112, x: -.012, axis: 'y' } });
   const right = new Rig(b, m, 1, onGrip(-.045, -.016, -.25, .025, .045, .035), V(-.42, -.3, .1), POSE.trigger);
   const left = new Rig(b, m, -1, onGrip(-.045, -.016, -.25, .05, .06, -.038), V(-.28, -.38, -.28), POSE.wrap, true);
   const fl = new MuzzleFlash(b, .163, .02, .14);
@@ -566,7 +570,7 @@ function pistol(m: WeaponMaterials): Viewmodel {
 }
 
 // ----- PR-7 pulse rifle -----
-function pulseRifle(m: WeaponMaterials): Viewmodel {
+function pulseRifle(m: WeaponMaterials, art?: GunArt): Viewmodel {
   const g = new THREE.Group(), b = bodyOf(g), k = new Kit();
   // upper receiver
   k.add(m.olive, side([[-.17, -.004], [.08, -.004], [.08, .056], [-.12, .058], [-.165, .04]], .05, [.004, .004, .006, .02, .006]));
@@ -631,6 +635,7 @@ function pulseRifle(m: WeaponMaterials): Viewmodel {
   const bolt = part(b, -.06, .041, .026);
   new Kit().add(m.steel, rbox(.02, .006, .008, .002, .001)).add(m.polymer, cylX(.0055, 0, .014, 10).rotateY(-Math.PI / 2), .004, 0, .004).into(bolt);
   // hands: trigger hand on the grip, support hand under the pump
+  if (art) dressGun(b, null, mag, art, { grip: [-.129, -.128], muzzle: [.526, .029], flip: true, gripRange: [.15, .6], magFit: { top: .008, bottom: -.15, x: .008, axis: 'x' } });
   const right = new Rig(b, m, 1, onGrip(-.08, -.03, -.28, .024, .045, .037), V(-.45, -.32, .05), POSE.trigger);
   const left = new Rig(b, m, -1, underFore(.2, -.124, .015), V(-.15, -.4, -.45), POSE.wrap, true);
   const lp = V(), q = new THREE.Quaternion(), e = new THREE.Euler();

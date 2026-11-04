@@ -596,7 +596,8 @@ const vm = new THREE.Group(); camera.add(vm); vm.position.set(.15, -.13, -.34); 
 const VMS = {};
 // first-person guns, gloved hands and sleeves are built in src/render/viewmodels.ts
 function buildViewmodels() {
-  const built = buildGunViewmodels(weaponMaterials());
+  // pistol and pulse rifle wear Meshy-generated models over the code-built rigs
+  const built = buildGunViewmodels(weaponMaterials(), { pistol: { gun: MODELS.vm_pistol, mag: MODELS.vm_pistol_mag }, pulse: { gun: MODELS.vm_rifle, mag: MODELS.vm_rifle_mag } });
   for (const [k, v] of Object.entries(built)) { const g = v.group; g.visible = false; g.muzzle = v.muzzle; g.vmAnim = v.anim; g.vmFlash = v.flash; vm.add(g); VMS[k] = g; }
 }
 // ---------- sound: everything is synthesized with Web Audio, so there are no files to load ----------
