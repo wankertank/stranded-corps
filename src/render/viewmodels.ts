@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { dressGun, type GunArt } from './gunArt';
+import { buildHandTemplate, MeshHand, type HandTemplate } from './meshHand';
+import type { ModelAsset } from './models';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { triplanar, type PBRSet } from './materials';
 import { latheX } from './shapes';
@@ -339,12 +341,17 @@ function wristTex(): THREE.CanvasTexture {
 }
 
 /** One hand and its forearm, posed against the gun and able to move off to fetch parts. */
+/** Set while buildViewmodels runs: the generated arm every Rig wears instead of the code-built hand and sleeve. */
+let handArt: HandTemplate | null = null;
+
 class Rig {
-  hand: Hand; arm: THREE.Group;
+  hand: Hand | MeshHand; arm: THREE.Group; private art: boolean;
   homePos: THREE.Vector3; homeQ: THREE.Quaternion; elbow: THREE.Vector3; pose: HandPose;
   constructor(parent: THREE.Object3D, m: WeaponMaterials, side: 1 | -1, at: { pos: THREE.Vector3; F: THREE.Vector3; K: THREE.Vector3 }, elbow: THREE.Vector3, pose: HandPose, device = false) {
     const { pos, F, K } = at;
-    this.hand = new Hand(m, side); this.arm = armGroup(m, device);
+    this.art = !!handArt;
+    if (handArt) { const mh = new MeshHand(handArt, side); this.hand = mh; this.arm = mh.arm; mh.mesh.userData.limb = true; }
+    else { this.hand = new Hand(m, side); this.arm = armGroup(m, device); }
     this.hand.root.userData.limb = this.arm.userData.limb = true;
     parent.add(this.hand.root, this.arm);
     this.homePos = pos.clone(); this.homeQ = basis(F, K, side); this.elbow = elbow.clone(); this.pose = pose;
@@ -354,7 +361,8 @@ class Rig {
   place(pos: THREE.Vector3, q: THREE.Quaternion): void {
     this.hand.root.position.copy(pos); this.hand.root.quaternion.copy(q);
     // the forearm runs from the wrist toward a fixed elbow point, rolled so its top stays up
-    const d = Rig._d.subVectors(this.elbow, pos).normalize(), u = Rig._u.set(0, 1, 0), z = Rig._z.crossVectors(d, u).normalize();
+    // (a generated sleeve rolls with the back of the hand instead, so the skinned wrist never twists)
+    const d = Rig._d.subVectors(this.elbow, pos).normalize(), u = this.art ? Rig._u.set(0, 0, 1).applyQuaternion(q) : Rig._u.set(0, 1, 0), z = Rig._z.crossVectors(d, u).normalize();
     u.crossVectors(z, d);
     this.arm.position.copy(pos); this.arm.quaternion.setFromRotationMatrix(Rig._m.makeBasis(d, u, z));
   }
@@ -438,8 +446,12 @@ function gaugeDisplay() {
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 }
 
-/** `art` swaps a gun's code-built body for a generated model (see gunArt.ts); hands and animation stay. */
-export function buildViewmodels(m: WeaponMaterials, art: { pistol?: GunArt; pulse?: GunArt } = {}): Record<string, Viewmodel> {
+/**
+ * `art` swaps a gun's code-built body for a generated model (see gunArt.ts); hands and animation stay.
+ * `art.hand` dresses every gun's hands and sleeves in a generated arm, rigged on load by meshHand.ts.
+ */
+export function buildViewmodels(m: WeaponMaterials, art: { pistol?: GunArt; pulse?: GunArt; hand?: ModelAsset } = {}): Record<string, Viewmodel> {
+  handArt = art.hand ? buildHandTemplate(art.hand) : null;
   return { pistol: pistol(m, art.pistol), pulse: pulseRifle(m, art.pulse), flamer: flamer(m), smart: smartGun(m) };
 }
 
