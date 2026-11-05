@@ -599,6 +599,24 @@ function buildViewmodels() {
   // pistol and pulse rifle wear Meshy-generated models over the code-built rigs, and every gun's hands a Meshy arm
   const built = buildGunViewmodels(weaponMaterials(), { pistol: { gun: MODELS.vm_pistol, mag: MODELS.vm_pistol_mag }, pulse: { gun: MODELS.vm_rifle, mag: MODELS.vm_rifle_mag }, hand: MODELS.vm_arm });
   for (const [k, v] of Object.entries(built)) { const g = v.group; g.visible = false; g.muzzle = v.muzzle; g.vmAnim = v.anim; g.vmFlash = v.flash; vm.add(g); VMS[k] = g; }
+  aimViewmodels();
+}
+// Each gun is turned so its barrel points at the crosshair 25 m out (from the viewmodel's resting pose), so
+// the tracer leaves the muzzle along the barrel instead of angling across the screen to where the round lands.
+function aimViewmodels() {
+  const target = new THREE.Vector3(0, 0, -25), M = new THREE.Matrix4(), q = new THREE.Quaternion(), vq = new THREE.Quaternion();
+  vm.position.set(.15, -.13, -.34); vm.rotation.set(0, .06, 0); vm.updateMatrix(); vq.copy(vm.quaternion);
+  for (const g of Object.values(VMS)) {
+    const b = g.children.find(c => c.isGroup); if (!b) continue;
+    for (let it = 0; it < 3; it++) {
+      g.updateMatrix(); M.multiplyMatrices(vm.matrix, g.matrix);
+      const mz = g.muzzle.clone().applyMatrix4(M), dir = new THREE.Vector3(1, 0, 0).applyQuaternion(b.quaternion).transformDirection(M);
+      // the turn in camera space, re-expressed in the viewmodel's space where the gun lives
+      q.setFromUnitVectors(dir, target.clone().sub(mz).normalize());
+      g.quaternion.premultiply(vq.clone().invert().multiply(q).multiply(vq));
+    }
+    g.updateMatrix();
+  }
 }
 // ---------- sound: everything is synthesized with Web Audio, so there are no files to load ----------
 const VOICE = { crawler: .7, drone: 1, spitter: 1.1, warrior: 1.6, warden: 1.9, brood: 3 };
@@ -1565,7 +1583,7 @@ function updateCamera(dt) {
     -.34 + S.recoil * .06 + tilt * .08);
   vm.rotation.set(S.recoil * .12 - vmSprint * .2 - dk * .9 + tilt * .25, .06 + vmSprint * .55 + tilt * .2, vmSprint * .3 + tilt * .35);
   g.vmAnim(R, dt, { count: S.mags[wid] ?? 0, capacity: WEAPONS[wid].mag, firing: S.muzzle > 0, recoil: S.recoil });
-  if (S.muzzle > 0 && wid !== 'flamer') { vm.updateMatrix(); muzzleLight.position.copy(VMS[wid].muzzle).applyMatrix4(vm.matrix); } // camera space, like the viewmodel
+  if (S.muzzle > 0 && wid !== 'flamer') { vm.updateMatrix(); muzzleLight.position.copy(VMS[wid].muzzle).applyMatrix4(VMS[wid].matrix).applyMatrix4(vm.matrix); } // camera space, like the viewmodel
   // build ghost
   if (S.buildMode) {
     const b = BUILDS[S.buildSel];
@@ -1686,4 +1704,4 @@ $('btnStart').disabled = false; $('btnStart').textContent = 'Deploy';
 requestAnimationFrame(frame);
 
 // Dev-only handle for automated playtests (stripped from production builds).
-if (import.meta.env.DEV) Object.assign(window, { __S: () => S, __post: post, __api: { renderer, scene, MODELS, VMS, placeModel, buildStruct, togglePause, selectWeapon, startReload, fire, H, slope, POIS, DOMES, RIGS, BASE, BENCH, solids, CULL, wakeNest, toggleMap, movePlayer, updateFeet, keys, cullWorld, LOOT_SPOTS, loot, craftItem, startNight, hurtEnemy, spawn, updateEnemies, losClear, rocks: () => rocks, placeStruct, camera, SFX } });
+if (import.meta.env.DEV) Object.assign(window, { __S: () => S, __post: post, __api: { renderer, scene, MODELS, VMS, placeModel, buildStruct, togglePause, selectWeapon, startReload, fire, H, slope, POIS, DOMES, RIGS, BASE, BENCH, solids, CULL, wakeNest, toggleMap, movePlayer, updateFeet, keys, cullWorld, LOOT_SPOTS, loot, craftItem, startNight, hurtEnemy, spawn, updateEnemies, vm, losClear, rocks: () => rocks, placeStruct, camera, SFX } });
