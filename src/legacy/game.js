@@ -1315,9 +1315,9 @@ function killEnemy(e) {
   if (e.type === 'brood') { drop('cores', 5); S.won = true; S.wonAt = S.t; msg('The Broodmother is dead. The nest is collapsing.', 'good'); }
 }
 // ---------- Skarn tactics ----------
-// Hunting Skarn don't all just charge. Stalkers move between rocks and buildings while you look their way and
-// rush you when you look off; anything close enough crouches and pounces; badly hurt ones break off, hide
-// out of sight and heal before coming back. Spitters only spit with a clear line and then relocate.
+// Hunting Skarn don't all just charge. They flank in at an angle, stalkers come in quiet and put on speed
+// while you look away, anything close enough crouches and pounces, and badly hurt ones break off and run
+// before coming back (no healing). Spitters only spit with a clear line and keep their distance.
 const STALK = { crawler: .35, drone: .6, spitter: 1, warrior: .45, warden: .2 };
 const POUNCE = { crawler: 1, drone: 1, warrior: 1 };
 const RETREAT = { crawler: 1, drone: 1, spitter: 1, warrior: 1 };
@@ -1337,22 +1337,6 @@ function losClear(ax, ay, az, bx, by, bz) {
   }
   return true;
 }
-/** A spot behind a boulder or building that the player can't see, within R of the Skarn. `away` prefers distance from the player. */
-function findCover(e, p, R, away) {
-  const d = ED[e.type], ey = d.r * 1.1, ex = eyeY(), dp = d2(e, p); let best = null, bs = Infinity;
-  const consider = (cx, cz) => {
-    const de = Math.hypot(cx - e.x, cz - e.z); if (de > R) return;
-    const dpc = Math.hypot(cx - p.x, cz - p.z); if (dpc < 6) return;
-    if (blocked(cx, cz, d.r) || losClear(p.x, ex, p.z, cx, H(cx, cz) + ey, cz)) return;
-    // stalking: the nearest cover that doesn't give ground; escaping: the farthest from the player
-    const sc = away ? de * .3 - dpc : de + Math.max(0, dpc - dp) * 1.5;
-    if (sc < bs) { bs = sc; best = { x: cx, z: cz }; }
-  };
-  const behind = (x, z, o) => { const vx = x - p.x, vz = z - p.z, L = Math.hypot(vx, vz) || 1; consider(x + vx / L * o, z + vz / L * o); };
-  rockGrid.query(e.x - R, e.z - R, e.x + R, e.z + R, k => { if (k.r >= 1.1) behind(k.x, k.z, k.r * .85 + d.r + .35); });
-  solidGrid.query(e.x - R, e.z - R, e.x + R, e.z + R, q => behind(q.x, q.z, Math.max(q.hw, q.hd) + d.r + .4));
-  return best;
-}
 /** Picks where a hunting Skarn heads this frame: { x, z, spd multiplier, hold (crouch in place) }. */
 function tactics(e, d, p, dt) {
   const dp = d2(e, p);
@@ -1361,37 +1345,27 @@ function tactics(e, d, p, dt) {
   if (e.losT <= 0) {
     e.losT = rand(.18, .28);
     e.los = losClear(p.x, eyeY(), p.z, e.x, H(e.x, e.z) + d.r * 1.1, e.z);
-    const f = fwd(); e.eyed = dp < 60 && ((e.x - p.x) * f.x + (e.z - p.z) * f.z) / (dp || 1) > .82; e.watched = e.los && e.eyed;
+    const f = fwd(); e.eyed = dp < 60 && ((e.x - p.x) * f.x + (e.z - p.z) * f.z) / (dp || 1) > .82;
   }
   e.style ??= chance(STALK[e.type] ?? 0) ? 'stalk' : 'rush';
   e.flank ??= chance(.5) ? 1 : -1;
   // how long you've been looking the other way (cover or not)
   e.unseenT = e.eyed ? 0 : (e.unseenT ?? 0) + dt;
-  e.pcd = (e.pcd ?? rand(1, 3)) - dt; e.coverCd = (e.coverCd ?? 0) - dt;
+  e.pcd = (e.pcd ?? rand(1, 3)) - dt;
   const go = (x, z, k = 1, hold = false) => ({ x, z, spd: k, hold });
   const at = (q) => q && Math.hypot(q.x - e.x, q.z - e.z) < 1;
-  // badly hurt: break off once, run for cover out of sight, then lie low and heal
+  // badly hurt: break off once and run, then turn and come back (still hurt)
   if (RETREAT[e.type] && !e.fled && e.hp < e.max * .3) {
     e.fled = true; e.tac = 'retreat'; e.rT = 0;
     const vx = e.x - p.x, vz = e.z - p.z, L = Math.hypot(vx, vz) || 1;
-    e.goal = findCover(e, p, 24, true) ?? { x: e.x + vx / L * 28, z: e.z + vz / L * 28 };
+    e.goal = { x: e.x + vx / L * 28, z: e.z + vz / L * 28 };
     SFX.screech(e.x, e.z, VOICE[e.type]);
   }
   switch (e.tac) {
     case 'retreat':
       e.rT += dt;
-      if (at(e.goal) || (dp > 24 && !e.los) || e.rT > 9) { e.tac = 'lurk'; return go(e.x, e.z, 0, true); }
-      return go(e.goal.x, e.goal.z, 1.3);
-    case 'lurk':
-      e.hp = Math.min(e.max * .75, e.hp + e.max * .035 * dt);
-      if (e.hp >= e.max * .75 || dp < 7) { e.tac = 'approach'; e.style = 'stalk'; }
-      return go(e.x, e.z, 0, true);
-    case 'hide':
-      if (!at(e.goal)) return go(e.goal.x, e.goal.z, 1.25);
-      e.hideT += dt;
-      // break cover the moment you look away, when you get close, or when it tires of waiting
-      if (e.unseenT > .6 || dp < 9 || e.hideT > 7) { e.tac = 'approach'; e.coverCd = rand(2.5, 4); e.burst = 1.6; }
-      else return go(p.x, p.z, 0, true);
+      if (!(at(e.goal) || dp > 26 || e.rT > 6)) return go(e.goal.x, e.goal.z, 1.3);
+      e.tac = 'approach'; e.style = 'stalk';
       break;
     case 'crouch':
       e.crT -= dt;
@@ -1399,11 +1373,6 @@ function tactics(e, d, p, dt) {
       return go(p.x, p.z, 0, true);
   }
   e.tac = 'approach';
-  // stalkers you're watching duck behind the nearest cover instead of walking into your sights
-  if (e.style === 'stalk' && e.watched && dp > 11 && dp < 50 && e.coverCd <= 0) {
-    const c = findCover(e, p, 11, false); e.coverCd = c ? rand(3, 5) : 1.5;
-    if (c) { e.tac = 'hide'; e.goal = c; e.hideT = 0; return go(c.x, c.z, 1.25); }
-  }
   // close and with a clear run: crouch, then leap
   if (POUNCE[e.type] && e.pcd <= 0 && e.los && dp > 3.2 && dp < 9) {
     const ux = (p.x - e.x) / dp, uz = (p.z - e.z) / dp; let clear = true;
@@ -1413,7 +1382,7 @@ function tactics(e, d, p, dt) {
   }
   if (e.type === 'spitter' && dp < 7) return go(e.x * 2 - p.x, e.z * 2 - p.z, 1.1); // keeps its distance
   // flank: come in at an angle from one side rather than straight down your sights
-  let k = e.burst > 0 ? 1.45 : e.style === 'stalk' && !e.watched ? 1.15 : 1; e.burst = Math.max(0, (e.burst ?? 0) - dt);
+  const k = e.style === 'stalk' && e.unseenT > .6 ? 1.3 : 1;
   if (dp > 6) { const off = Math.min(9, dp * .35) * e.flank, ux = (p.x - e.x) / dp, uz = (p.z - e.z) / dp; return go(p.x - uz * off, p.z + ux * off, k); }
   return go(p.x, p.z, k);
 }
@@ -1470,8 +1439,8 @@ function updateEnemies(dt) {
     let da = Math.atan2(dz, dx) - e.a; while (da > Math.PI) da -= TAU; while (da < -Math.PI) da += TAU; e.a += da * Math.min(1, dt * 7);
     const dp = d2(e, p);
     if (e.type === 'spitter' && e.state === 'hunt' && dp < d.range && e.los && dp > 5) {
-      // a clear shot: spit, then often slip back into cover before the next one
-      if (e.cd <= 0) { e.cd = d.cd; e.atk = .25; spit(e); if (chance(.35)) { const c = findCover(e, p, 12, false); if (c) { e.tac = 'hide'; e.goal = c; e.hideT = 0; } } }
+      // spits only with a clear shot
+      if (e.cd <= 0) { e.cd = d.cd; e.atk = .25; spit(e); }
       e.anim += dt * 2;
     } else if (e.state === 'hunt' && dp < d.r + p.r + .7 && e.tac !== 'retreat') {
       if (e.cd <= 0) { e.cd = d.cd; e.atk = .25; SFX.claw(e.x, e.z); hurtPlayer(d.dmg); }
@@ -1717,4 +1686,4 @@ $('btnStart').disabled = false; $('btnStart').textContent = 'Deploy';
 requestAnimationFrame(frame);
 
 // Dev-only handle for automated playtests (stripped from production builds).
-if (import.meta.env.DEV) Object.assign(window, { __S: () => S, __post: post, __api: { renderer, scene, MODELS, VMS, placeModel, buildStruct, togglePause, selectWeapon, startReload, fire, H, slope, POIS, DOMES, RIGS, BASE, BENCH, solids, CULL, wakeNest, toggleMap, movePlayer, updateFeet, keys, cullWorld, LOOT_SPOTS, loot, craftItem, startNight, hurtEnemy, spawn, updateEnemies, losClear, findCover, rocks: () => rocks, placeStruct, camera, SFX } });
+if (import.meta.env.DEV) Object.assign(window, { __S: () => S, __post: post, __api: { renderer, scene, MODELS, VMS, placeModel, buildStruct, togglePause, selectWeapon, startReload, fire, H, slope, POIS, DOMES, RIGS, BASE, BENCH, solids, CULL, wakeNest, toggleMap, movePlayer, updateFeet, keys, cullWorld, LOOT_SPOTS, loot, craftItem, startNight, hurtEnemy, spawn, updateEnemies, losClear, rocks: () => rocks, placeStruct, camera, SFX } });
