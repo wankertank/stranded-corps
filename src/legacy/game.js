@@ -535,7 +535,7 @@ function animSkarn(e) {
     const moved = Math.hypot(e.x - (e.px ?? e.x), e.z - (e.pz ?? e.z)); e.px = e.x; e.pz = e.z;
     e.mvK = lerp(e.mvK ?? 0, moved > .002 && !e.dying ? 1 : 0, .15);
     const atk = e.atk > 0 ? Math.sin((1 - e.atk / .25) * Math.PI) : 0;
-    animateRig(e.m.R, { t: e.anim, moving: e.mvK, attack: atk, sleep: e.state === 'sleep', dead: e.dying > 0 ? 1 : 0, turn: 0 });
+    animateRig(e.m.R, { t: e.anim, moving: e.mvK, attack: atk, sleep: e.state === 'sleep' || !!e.low, dead: e.dying > 0 ? 1 : 0, turn: 0 });
     return;
   }
   const m = e.m, d = ED[e.type], s = d.r, t = e.anim, dead = e.dying > 0;
@@ -558,7 +558,7 @@ function animSkarn(e) {
     let fx = hx + Math.cos(ph) * s * .45 + (L.j === 0 ? s * .3 : -s * .1), fy = Math.max(0, Math.sin(ph)) * s * .3, fz = L.side * s * reach;
     let kx = e.type === 'crawler' ? hx + (fx - hx) * .4 : hx - s * .3, ky = s * (e.type === 'crawler' ? 1.0 : 1.15), kz = L.side * s * (e.type === 'crawler' ? reach * .7 : .72);
     if (dead) { kx = hx; ky = s * .9; kz = L.side * s * .6; fx = hx - s * .2; fy = s * .5; fz = L.side * s * .3; }
-    if (e.state === 'sleep' && !dead) { fy = 0; fx = hx + (L.j === 0 ? s * .3 : -s * .1); }
+    if ((e.state === 'sleep' || e.low) && !dead) { fy = 0; fx = hx + (L.j === 0 ? s * .3 : -s * .1); }
     seg(L.a, hx, ty, L.side * s * .3, kx, ky, kz, s * .11);
     seg(L.b, kx, ky, kz, fx, fy, fz, s * .07);
   }
@@ -835,7 +835,7 @@ function spawn(type, x, z, state = 'hunt') {
   const e = { type, x, z, hp: d.hp, max: d.hp, a: rand(0, TAU), anim: rand(0, 10), cd: 0, state, flash: 0, spawnT: 0, atk: 0, dying: 0, m };
   S.enemies.push(e); placeEnemy(e); animSkarn(e); return e;
 }
-function placeEnemy(e) { e.m.g.position.set(e.x, H(e.x, e.z), e.z); e.m.g.rotation.y = -e.a; }
+function placeEnemy(e) { e.m.g.position.set(e.x, H(e.x, e.z) + (e.jy || 0), e.z); e.m.g.rotation.y = -e.a; }
 
 // ---------- helpers ----------
 function msg(text, kind = '') {
@@ -1222,7 +1222,7 @@ function rayCast(o, d, maxD) {
   let best = null, bt = maxD;
   for (const e of S.enemies) {
     if (e.dying) continue;
-    const s = ED[e.type].r, cx = e.x + Math.cos(e.a) * s * .4, cy = H(e.x, e.z) + s * .95, cz = e.z + Math.sin(e.a) * s * .4, R = s * 1.3;
+    const s = ED[e.type].r, cx = e.x + Math.cos(e.a) * s * .4, cy = H(e.x, e.z) + (e.jy || 0) + s * .95, cz = e.z + Math.sin(e.a) * s * .4, R = s * 1.3;
     const lx = cx - o.x, ly = cy - o.y, lz = cz - o.z, tca = lx * d.x + ly * d.y + lz * d.z; if (tca < 0) continue;
     const dd = lx * lx + ly * ly + lz * lz - tca * tca; if (dd > R * R) continue;
     const t = tca - Math.sqrt(R * R - dd); if (t < bt) { bt = t; best = e; }
@@ -1276,7 +1276,7 @@ function fire() {
   const dir = d.clone();
   if (wid === 'smart') {
     let best = null, bd = 30;
-    for (const e of S.enemies) { if (e.dying || (e.state === 'sleep' && d2(e, p) > 20)) continue; const dx = e.x - o.x, dy = H(e.x, e.z) + ED[e.type].r - o.y, dz = e.z - o.z, dist = Math.hypot(dx, dy, dz); if (dist < bd && (dx * d.x + dy * d.y + dz * d.z) / dist > .93) { bd = dist; best = { dx, dy, dz, dist }; } }
+    for (const e of S.enemies) { if (e.dying || (e.state === 'sleep' && d2(e, p) > 20)) continue; const dx = e.x - o.x, dy = H(e.x, e.z) + (e.jy || 0) + ED[e.type].r - o.y, dz = e.z - o.z, dist = Math.hypot(dx, dy, dz); if (dist < bd && (dx * d.x + dy * d.y + dz * d.z) / dist > .93) { bd = dist; best = { dx, dy, dz, dist }; } }
     if (best) dir.set(best.dx / best.dist, best.dy / best.dist, best.dz / best.dist);
   }
   dir.x += rand(-w.spread, w.spread); dir.y += rand(-w.spread, w.spread); dir.z += rand(-w.spread, w.spread); dir.normalize();
@@ -1314,6 +1314,130 @@ function killEnemy(e) {
   if (e.type === 'warden') drop('cores', 2);
   if (e.type === 'brood') { drop('cores', 5); S.won = true; S.wonAt = S.t; msg('The Broodmother is dead. The nest is collapsing.', 'good'); }
 }
+// ---------- Skarn tactics ----------
+// Hunting Skarn don't all just charge. Stalkers move between rocks and buildings while you look their way and
+// rush you when you look off; anything close enough crouches and pounces; badly hurt ones break off, hide
+// out of sight and heal before coming back. Spitters only spit with a clear line and then relocate.
+const STALK = { crawler: .35, drone: .6, spitter: 1, warrior: .45, warden: .2 };
+const POUNCE = { crawler: 1, drone: 1, warrior: 1 };
+const RETREAT = { crawler: 1, drone: 1, spitter: 1, warrior: 1 };
+/** Line of sight between two points: blocked by big boulders, building walls and hills. */
+function losClear(ax, ay, az, bx, by, bz) {
+  const dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz, L = Math.sqrt(L2) || 1;
+  const hit = rockGrid.query(Math.min(ax, bx) - 4, Math.min(az, bz) - 4, Math.max(ax, bx) + 4, Math.max(az, bz) + 4, k => {
+    if (k.r < .9) return;
+    const t = clamp(((k.x - ax) * dx + (k.z - az) * dz) / (L2 || 1), 0, 1), px = ax + dx * t, pz = az + dz * t;
+    return Math.hypot(k.x - px, k.z - pz) < k.r * .8 && ay + (by - ay) * t < k.y + k.r * .85;
+  });
+  if (hit) return false;
+  for (let t = 1.5; t < L - 1; t += 1.5) {
+    const k = t / L, x = ax + dx * k, z = az + dz * k, y = ay + (by - ay) * k;
+    if (y < H(x, z) + .2) return false;
+    const q = solidHit(x, z, 0); if (q && y < q.top) return false;
+  }
+  return true;
+}
+/** A spot behind a boulder or building that the player can't see, within R of the Skarn. `away` prefers distance from the player. */
+function findCover(e, p, R, away) {
+  const d = ED[e.type], ey = d.r * 1.1, ex = eyeY(), dp = d2(e, p); let best = null, bs = Infinity;
+  const consider = (cx, cz) => {
+    const de = Math.hypot(cx - e.x, cz - e.z); if (de > R) return;
+    const dpc = Math.hypot(cx - p.x, cz - p.z); if (dpc < 6) return;
+    if (blocked(cx, cz, d.r) || losClear(p.x, ex, p.z, cx, H(cx, cz) + ey, cz)) return;
+    // stalking: the nearest cover that doesn't give ground; escaping: the farthest from the player
+    const sc = away ? de * .3 - dpc : de + Math.max(0, dpc - dp) * 1.5;
+    if (sc < bs) { bs = sc; best = { x: cx, z: cz }; }
+  };
+  const behind = (x, z, o) => { const vx = x - p.x, vz = z - p.z, L = Math.hypot(vx, vz) || 1; consider(x + vx / L * o, z + vz / L * o); };
+  rockGrid.query(e.x - R, e.z - R, e.x + R, e.z + R, k => { if (k.r >= 1.1) behind(k.x, k.z, k.r * .85 + d.r + .35); });
+  solidGrid.query(e.x - R, e.z - R, e.x + R, e.z + R, q => behind(q.x, q.z, Math.max(q.hw, q.hd) + d.r + .4));
+  return best;
+}
+/** Picks where a hunting Skarn heads this frame: { x, z, spd multiplier, hold (crouch in place) }. */
+function tactics(e, d, p, dt) {
+  const dp = d2(e, p);
+  // perception, a few times a second: can it see you, and are you looking at it?
+  e.losT = (e.losT ?? rand(0, .2)) - dt;
+  if (e.losT <= 0) {
+    e.losT = rand(.18, .28);
+    e.los = losClear(p.x, eyeY(), p.z, e.x, H(e.x, e.z) + d.r * 1.1, e.z);
+    const f = fwd(); e.eyed = dp < 60 && ((e.x - p.x) * f.x + (e.z - p.z) * f.z) / (dp || 1) > .82; e.watched = e.los && e.eyed;
+  }
+  e.style ??= chance(STALK[e.type] ?? 0) ? 'stalk' : 'rush';
+  e.flank ??= chance(.5) ? 1 : -1;
+  // how long you've been looking the other way (cover or not)
+  e.unseenT = e.eyed ? 0 : (e.unseenT ?? 0) + dt;
+  e.pcd = (e.pcd ?? rand(1, 3)) - dt; e.coverCd = (e.coverCd ?? 0) - dt;
+  const go = (x, z, k = 1, hold = false) => ({ x, z, spd: k, hold });
+  const at = (q) => q && Math.hypot(q.x - e.x, q.z - e.z) < 1;
+  // badly hurt: break off once, run for cover out of sight, then lie low and heal
+  if (RETREAT[e.type] && !e.fled && e.hp < e.max * .3) {
+    e.fled = true; e.tac = 'retreat'; e.rT = 0;
+    const vx = e.x - p.x, vz = e.z - p.z, L = Math.hypot(vx, vz) || 1;
+    e.goal = findCover(e, p, 24, true) ?? { x: e.x + vx / L * 28, z: e.z + vz / L * 28 };
+    SFX.screech(e.x, e.z, VOICE[e.type]);
+  }
+  switch (e.tac) {
+    case 'retreat':
+      e.rT += dt;
+      if (at(e.goal) || (dp > 24 && !e.los) || e.rT > 9) { e.tac = 'lurk'; return go(e.x, e.z, 0, true); }
+      return go(e.goal.x, e.goal.z, 1.3);
+    case 'lurk':
+      e.hp = Math.min(e.max * .75, e.hp + e.max * .035 * dt);
+      if (e.hp >= e.max * .75 || dp < 7) { e.tac = 'approach'; e.style = 'stalk'; }
+      return go(e.x, e.z, 0, true);
+    case 'hide':
+      if (!at(e.goal)) return go(e.goal.x, e.goal.z, 1.25);
+      e.hideT += dt;
+      // break cover the moment you look away, when you get close, or when it tires of waiting
+      if (e.unseenT > .6 || dp < 9 || e.hideT > 7) { e.tac = 'approach'; e.coverCd = rand(2.5, 4); e.burst = 1.6; }
+      else return go(p.x, p.z, 0, true);
+      break;
+    case 'crouch':
+      e.crT -= dt;
+      if (e.crT <= 0) startLeap(e, d, p);
+      return go(p.x, p.z, 0, true);
+  }
+  e.tac = 'approach';
+  // stalkers you're watching duck behind the nearest cover instead of walking into your sights
+  if (e.style === 'stalk' && e.watched && dp > 11 && dp < 50 && e.coverCd <= 0) {
+    const c = findCover(e, p, 11, false); e.coverCd = c ? rand(3, 5) : 1.5;
+    if (c) { e.tac = 'hide'; e.goal = c; e.hideT = 0; return go(c.x, c.z, 1.25); }
+  }
+  // close and with a clear run: crouch, then leap
+  if (POUNCE[e.type] && e.pcd <= 0 && e.los && dp > 3.2 && dp < 9) {
+    const ux = (p.x - e.x) / dp, uz = (p.z - e.z) / dp; let clear = true;
+    for (let t = 1; t < dp - 1; t += 1) if (rockHit(e.x + ux * t, e.z + uz * t, .3) || solidHit(e.x + ux * t, e.z + uz * t, .3)) { clear = false; break; }
+    if (clear) { e.tac = 'crouch'; e.crT = e.type === 'warrior' ? .5 : .32; SFX.hiss(e.x, e.z, VOICE[e.type]); return go(p.x, p.z, 0, true); }
+    e.pcd = .5;
+  }
+  if (e.type === 'spitter' && dp < 7) return go(e.x * 2 - p.x, e.z * 2 - p.z, 1.1); // keeps its distance
+  // flank: come in at an angle from one side rather than straight down your sights
+  let k = e.burst > 0 ? 1.45 : e.style === 'stalk' && !e.watched ? 1.15 : 1; e.burst = Math.max(0, (e.burst ?? 0) - dt);
+  if (dp > 6) { const off = Math.min(9, dp * .35) * e.flank, ux = (p.x - e.x) / dp, uz = (p.z - e.z) / dp; return go(p.x - uz * off, p.z + ux * off, k); }
+  return go(p.x, p.z, k);
+}
+function startLeap(e, d, p) {
+  const dp = d2(e, p) || 1, ux = (p.x - e.x) / dp, uz = (p.z - e.z) / dp, land = Math.max(0, dp - (d.r + p.r) * .5);
+  const T = clamp(dp / (d.spd * 2.4), .35, .75);
+  e.tac = 'leap'; e.lp = { x0: e.x, z0: e.z, x1: e.x + ux * land, z1: e.z + uz * land, T, t: 0, h: Math.min(2.2, .9 + dp * .12), hit: false };
+  e.atk = .25; e.a = Math.atan2(uz, ux); SFX.screech(e.x, e.z, VOICE[e.type]);
+}
+function leap(e, d, p, dt) {
+  const L = e.lp; L.t += dt; const k = Math.min(1, L.t / L.T);
+  const nx = lerp(L.x0, L.x1, k), nz = lerp(L.z0, L.z1, k);
+  if (inBounds(nx, nz, d.r) && !solidHit(nx, nz, d.r)) { e.x = nx; e.z = nz; }
+  e.jy = 4 * L.h * k * (1 - k); e.anim += dt * 4; e.atk = Math.max(e.atk, .12);
+  // claws connect on the way down if you didn't get clear
+  if (!L.hit && k > .45 && d2(e, p) < d.r + p.r + .9 && Math.abs(H(e.x, e.z) + e.jy + d.r - eyeY() + .6) < 2) {
+    L.hit = true; SFX.claw(e.x, e.z); hurtPlayer(Math.round(d.dmg * 1.4)); S.shake = Math.max(S.shake, .8);
+  }
+  if (k >= 1) {
+    e.jy = 0; e.tac = 'approach'; e.pcd = rand(3.5, 6.5); e.cd = d.cd;
+    if (blocked(e.x, e.z, d.r)) { e.x = L.x0; e.z = L.z0; }
+    fx('dust', e.x, H(e.x, e.z) + .2, e.z, { s: d.r });
+  }
+}
 function updateEnemies(dt) {
   const p = S.player;
   for (const e of S.enemies) {
@@ -1327,28 +1451,33 @@ function updateEnemies(dt) {
     }
     e.flash = Math.max(0, e.flash - dt); e.cd -= dt; e.atk = Math.max(0, e.atk - dt);
     if (e.state === 'hunt') {
-      e.vT = (e.vT ?? rand(1, 6)) - dt; if (e.vT <= 0) { e.vT = rand(4, 9); const dv = d2(e, p); if (dv < 60) (dv < 14 ? SFX.hiss : SFX.screech)(e.x, e.z, VOICE[e.type]); }
-      e.skT = (e.skT ?? 0) - dt; if (e.skT <= 0) { e.skT = .35; SFX.skitter(e.x, e.z); }
+      e.vT = (e.vT ?? rand(1, 6)) - dt; if (e.vT <= 0) { e.vT = rand(4, 9); const dv = d2(e, p); if (dv < 60 && !e.low && !(e.style === 'stalk' && dv > 14)) (dv < 14 ? SFX.hiss : SFX.screech)(e.x, e.z, VOICE[e.type]); }
+      e.skT = (e.skT ?? 0) - dt; if (e.skT <= 0 && !e.low) { e.skT = .35; SFX.skitter(e.x, e.z); }
     }
     e.m.mat.emissive.setScalar(e.flash > 0 ? .6 : 0);
     if (e.state === 'sleep') { e.anim += dt * .4; if (d2(e, p) < (e.nest === 'hive' ? 26 : 16)) wakeNest(e.nest); if (near) animSkarn(e); continue; }
-    let tx = p.x, tz = p.z, spd = d.spd;
+    if (e.tac === 'leap') { leap(e, d, p, dt); placeEnemy(e); if (near) animSkarn(e); continue; }
+    let tx = p.x, tz = p.z, spd = d.spd, hold = false; e.low = false;
     if (e.state === 'flee') { tx = HIVE.x; tz = HIVE.z; spd *= 1.2; if (d2(e, p) > 60) { e.gone = true; scene.remove(g); continue; } }
     else {
       let tgt = null, td = Math.min(d2(e, p), 12);
       for (const s of S.structs.values()) if (s.type === 'turret' || s.type === 'light') { const sd = d2(e, s); if (sd < td) { td = sd; tgt = s; } }
-      if (tgt) { tx = tgt.x; tz = tgt.z; }
+      if (tgt) { tx = tgt.x; tz = tgt.z; e.tac = 'approach'; }
+      else if (e.type !== 'brood') { const r = tactics(e, d, p, dt); tx = r.x; tz = r.z; spd *= r.spd; hold = r.hold; e.low = r.hold; }
       if (e.type === 'brood' && d2(e, p) < 45) { e.spawnT -= dt; if (e.spawnT <= 0) { e.spawnT = 4; for (let i = 0; i < 3; i++) spawn('crawler', e.x + rand(-2, 2), e.z + rand(-2, 2)); } }
     }
     const dx = tx - e.x, dz = tz - e.z, dd = Math.hypot(dx, dz) || 1;
     let da = Math.atan2(dz, dx) - e.a; while (da > Math.PI) da -= TAU; while (da < -Math.PI) da += TAU; e.a += da * Math.min(1, dt * 7);
     const dp = d2(e, p);
-    if (e.type === 'spitter' && e.state === 'hunt' && dp < d.range) {
-      if (e.cd <= 0) { e.cd = d.cd; e.atk = .25; spit(e); }
+    if (e.type === 'spitter' && e.state === 'hunt' && dp < d.range && e.los && dp > 5) {
+      // a clear shot: spit, then often slip back into cover before the next one
+      if (e.cd <= 0) { e.cd = d.cd; e.atk = .25; spit(e); if (chance(.35)) { const c = findCover(e, p, 12, false); if (c) { e.tac = 'hide'; e.goal = c; e.hideT = 0; } } }
       e.anim += dt * 2;
-    } else if (e.state === 'hunt' && dp < d.r + p.r + .7) {
+    } else if (e.state === 'hunt' && dp < d.r + p.r + .7 && e.tac !== 'retreat') {
       if (e.cd <= 0) { e.cd = d.cd; e.atk = .25; SFX.claw(e.x, e.z); hurtPlayer(d.dmg); }
       e.anim += dt * 3;
+    } else if (hold) {
+      e.anim += dt * .5;
     } else {
       const step = spd * dt, moved = moveBody(e, dx / dd * step, dz / dd * step, d.r);
       e.anim += dt * spd / (d.r * 1.6);
@@ -1588,4 +1717,4 @@ $('btnStart').disabled = false; $('btnStart').textContent = 'Deploy';
 requestAnimationFrame(frame);
 
 // Dev-only handle for automated playtests (stripped from production builds).
-if (import.meta.env.DEV) Object.assign(window, { __S: () => S, __post: post, __api: { renderer, scene, MODELS, VMS, placeModel, buildStruct, togglePause, selectWeapon, startReload, fire, H, slope, POIS, DOMES, RIGS, BASE, BENCH, solids, CULL, wakeNest, toggleMap, movePlayer, updateFeet, keys, cullWorld, LOOT_SPOTS, loot, craftItem, startNight, hurtEnemy, spawn, placeStruct, camera, SFX } });
+if (import.meta.env.DEV) Object.assign(window, { __S: () => S, __post: post, __api: { renderer, scene, MODELS, VMS, placeModel, buildStruct, togglePause, selectWeapon, startReload, fire, H, slope, POIS, DOMES, RIGS, BASE, BENCH, solids, CULL, wakeNest, toggleMap, movePlayer, updateFeet, keys, cullWorld, LOOT_SPOTS, loot, craftItem, startNight, hurtEnemy, spawn, updateEnemies, losClear, findCover, rocks: () => rocks, placeStruct, camera, SFX } });
